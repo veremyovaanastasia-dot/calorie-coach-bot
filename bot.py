@@ -155,7 +155,12 @@ async def cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user = await db.get_user(update.effective_user.id)
     if not user:
-        await update.message.reply_text("Сначала пройди /start")
+        await update.message.reply_text(
+            "Привет! Я Олег, твой коуч. Давай познакомимся — "
+            "расскажи о себе: имя, вес, рост, возраст и цель по весу. "
+            "Можно всё сразу, можно по частям 🤙\n\n"
+            "Или нажми /start"
+        )
         return
 
     msg = await update.message.reply_text("Секунду, смотрю что тут...")
@@ -211,7 +216,12 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user = await db.get_user(update.effective_user.id)
     if not user:
-        await update.message.reply_text("Сначала пройди /start")
+        await update.message.reply_text(
+            "Привет! Я Олег, твой коуч. Давай познакомимся — "
+            "расскажи о себе: имя, вес, рост, возраст и цель по весу. "
+            "Можно всё сразу, можно по частям 🤙\n\n"
+            "Или нажми /start"
+        )
         return
 
     text = update.message.text.strip()
@@ -305,7 +315,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cmd_weight(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user = await db.get_user(update.effective_user.id)
     if not user:
-        await update.message.reply_text("Сначала /start")
+        await update.message.reply_text("Давай сначала познакомимся! Нажми /start")
         return
     if not ctx.args:
         await update.message.reply_text("Напиши вес: /weight 67.5")
@@ -331,7 +341,7 @@ async def cmd_weight(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cmd_activity(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user = await db.get_user(update.effective_user.id)
     if not user:
-        await update.message.reply_text("Сначала /start")
+        await update.message.reply_text("Давай сначала познакомимся! Нажми /start")
         return
     if not ctx.args:
         await update.message.reply_text("Опиши: /activity бег 30 минут")
@@ -362,7 +372,7 @@ async def cmd_activity(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cmd_today(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user = await db.get_user(update.effective_user.id)
     if not user:
-        await update.message.reply_text("Сначала /start")
+        await update.message.reply_text("Давай сначала познакомимся! Нажми /start")
         return
 
     stats = await db.get_today_stats(update.effective_user.id)
@@ -392,7 +402,7 @@ async def cmd_today(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cmd_week(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user = await db.get_user(update.effective_user.id)
     if not user:
-        await update.message.reply_text("Сначала /start")
+        await update.message.reply_text("Давай сначала познакомимся! Нажми /start")
         return
 
     stats = await db.get_week_stats(update.effective_user.id)
@@ -440,7 +450,7 @@ async def cmd_week(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cmd_progress(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user = await db.get_user(update.effective_user.id)
     if not user:
-        await update.message.reply_text("Сначала /start")
+        await update.message.reply_text("Давай сначала познакомимся! Нажми /start")
         return
 
     progress = await db.get_progress(update.effective_user.id)
@@ -502,7 +512,7 @@ async def cmd_progress(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cmd_coach(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user = await db.get_user(update.effective_user.id)
     if not user:
-        await update.message.reply_text("Сначала /start")
+        await update.message.reply_text("Давай сначала познакомимся! Нажми /start")
         return
     today_stats = await db.get_today_stats(update.effective_user.id)
     history = await db.get_chat_history(update.effective_user.id)
@@ -519,7 +529,7 @@ async def cmd_coach(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cmd_sleep(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user = await db.get_user(update.effective_user.id)
     if not user:
-        await update.message.reply_text("Сначала /start")
+        await update.message.reply_text("Давай сначала познакомимся! Нажми /start")
         return
     if not ctx.args:
         await update.message.reply_text("Сколько спала: /sleep 7.5\nИли с пометкой: /sleep 6 плохо")
@@ -546,7 +556,7 @@ async def cmd_sleep(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cmd_mood(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user = await db.get_user(update.effective_user.id)
     if not user:
-        await update.message.reply_text("Сначала /start")
+        await update.message.reply_text("Давай сначала познакомимся! Нажми /start")
         return
     if not ctx.args:
         await update.message.reply_text("Как настроение: /mood отлично\nИли: /mood устала после работы")
@@ -568,7 +578,7 @@ async def cmd_mood(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cmd_cycle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user = await db.get_user(update.effective_user.id)
     if not user:
-        await update.message.reply_text("Сначала /start")
+        await update.message.reply_text("Давай сначала познакомимся! Нажми /start")
         return
     if not ctx.args:
         await update.message.reply_text("День цикла: /cycle 14\nИли: /cycle 3 болит живот")

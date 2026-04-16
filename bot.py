@@ -21,16 +21,31 @@ from config import TELEGRAM_TOKEN
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
-# Onboarding states
-NAME, WEIGHT, HEIGHT, AGE, GOAL, MOTIVATION = range(6)
+# Onboarding: single conversational state
+ONBOARDING = 0
 
 
 # ── /start onboarding ──────────────────────────────────────────────
 
+ONBOARD_EXTRACT_PROMPT = """Из сообщений пользователя извлеки данные для профиля.
+Верни ТОЛЬКО JSON (без markdown):
+{{"name": "имя или null", "weight": число_или_null, "height": число_см_или_null, "age": число_или_null, "goal": число_кг_или_null, "motivation": "supportive/strict/analytical или null", "missing": ["список того что ещё не указано"], "reply": "твой ответ пользователю от лица Олега — попроси недостающее или поприветствуй если всё есть"}}
+
+Правила:
+- Извлекай данные из ВСЕХ сообщений в истории, не только последнего
+- Если пользователь исправляет ("нет, не 63, а 65") — бери исправлённое значение
+- Рост в метрах (1.65) переводи в см (165)
+- "имя" — только имя, без "я", "меня зовут" и т.п.
+- "motivation": мягкая/поддержка = supportive, жёсткий/строгий = strict, аналитик/цифры = analytical
+- Если пользователь не указал мотивацию — по умолчанию "supportive", НЕ спрашивай отдельно
+- "missing" — ТОЛЬКО: name, weight, height, age, goal. Motivation не обязательна.
+- "reply" — говори от лица Олега (короткий, живой, с характером). Если всё есть — поприветствуй и скажи что готов работать.
+- Если можешь получить несколько данных за раз ("я Настя, 28 лет, 63 кг") — бери всё сразу"""
+
+
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user = await db.get_user(update.effective_user.id)
     if user:
-        # User already exists — just greet them back
         today_stats = await db.get_today_stats(update.effective_user.id)
         history = await db.get_chat_history(update.effective_user.id)
         response = await ai.coach_response(
@@ -39,104 +54,92 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         await update.message.reply_text(response)
         return ConversationHandler.END
+    ctx.user_data["onboard_history"] = []
     await update.message.reply_text(
         "Йо! Олег на связи 🤙\n\n"
-        "Я буду твоим личным коучем — калории считать, за белком следить, "
-        "мотивировать когда лень, и пинать когда надо.\n\n"
-        "Давай знакомиться. Как тебя зовут?"
+        "Расскажи о себе — имя, вес, рост, возраст и цель по весу. "
+        "Можно всё сразу, можно по частям, как удобно."
     )
-    return NAME
+    return ONBOARDING
 
-async def onboard_name(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    ctx.user_data["name"] = update.message.text.strip()
-    await update.message.reply_text(f"Приятно, {ctx.user_data['name']}! Сколько ты весишь сейчас? (кг)")
-    return WEIGHT
+async def onboard_chat(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Single conversational onboarding handler — AI extracts all data from free chat."""
+    text = update.message.text.strip()
+    history = ctx.user_data.get("onboard_history", [])
+    history.append({"role": "user", "content": text})
+    ctx.user_data["onboard_history"] = history
 
-async def onboard_weight(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    try:
-        ctx.user_data["weight"] = float(update.message.text.replace(",", "."))
-    except ValueError:
-        await update.message.reply_text("Введи число, например 67.5")
-        return WEIGHT
-    await update.message.reply_text("Какой у тебя рост? (см)")
-    return HEIGHT
+    # Build messages for AI extraction
+    messages = [{"role": "user", "content": ONBOARD_EXTRACT_PROMPT + "\n\nИстория сообщений:\n" +
+                 "\n".join(f"{'Пользователь' if m['role']=='user' else 'Олег'}: {m['content']}" for m in history)}]
 
-async def onboard_height(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    try:
-        ctx.user_data["height"] = int(update.message.text)
-    except ValueError:
-        await update.message.reply_text("Введи число, например 165")
-        return HEIGHT
-    await update.message.reply_text("Сколько тебе лет?")
-    return AGE
-
-async def onboard_age(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    try:
-        ctx.user_data["age"] = int(update.message.text)
-    except ValueError:
-        await update.message.reply_text("Введи число")
-        return AGE
-    await update.message.reply_text("Какой вес — твоя цель? (кг)")
-    return GOAL
-
-async def onboard_goal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    try:
-        ctx.user_data["goal"] = float(update.message.text.replace(",", "."))
-    except ValueError:
-        await update.message.reply_text("Введи число, например 60")
-        return GOAL
-    kb = ReplyKeyboardMarkup(
-        [["Мягкая поддержка", "Жёсткий тренер", "Аналитик"]],
-        one_time_keyboard=True, resize_keyboard=True,
+    import anthropic as _anthropic
+    from config import ANTHROPIC_API_KEY, CLAUDE_MODEL_FAST
+    _client = _anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    resp = _client.messages.create(
+        model=CLAUDE_MODEL_FAST,
+        max_tokens=600,
+        messages=messages,
     )
-    await update.message.reply_text(
-        "Какой стиль мотивации тебе ближе?\n\n"
-        "🤗 Мягкая поддержка — похвала, без давления\n"
-        "💪 Жёсткий тренер — конкретика, без отмазок\n"
-        "📊 Аналитик — цифры, факты, проценты",
-        reply_markup=kb,
-    )
-    return MOTIVATION
 
-async def onboard_motivation(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.lower()
-    if "жёстк" in text or "жестк" in text or "тренер" in text:
-        mtype = "strict"
-    elif "аналитик" in text or "цифр" in text:
-        mtype = "analytical"
-    else:
-        mtype = "supportive"
+    try:
+        data = ai._parse_json(resp.content[0].text)
+    except Exception:
+        await update.message.reply_text("Прости, не понял. Расскажи имя, вес, рост, возраст и цель по весу.")
+        return ONBOARDING
 
-    ud = ctx.user_data
-    # Calculate daily targets (Mifflin-St Jeor + deficit)
-    bmr = 10 * ud["weight"] + 6.25 * ud["height"] - 5 * ud["age"] - 161  # female
-    tdee = bmr * 1.4  # moderate activity
-    cal_target = max(1200, int(tdee - 400))  # ~400 kcal deficit
-    protein_target = int(ud["weight"] * 1.6)  # 1.6g per kg
+    if "error" in data:
+        await update.message.reply_text("Прости, не разобрал. Попробуй ещё раз — имя, вес, рост, возраст и цель.")
+        return ONBOARDING
+
+    # Check if we have all required fields
+    name = data.get("name")
+    weight = data.get("weight")
+    height = data.get("height")
+    age = data.get("age")
+    goal = data.get("goal")
+    motivation = data.get("motivation") or "supportive"
+    missing = [f for f in ["name", "weight", "height", "age", "goal"]
+               if not data.get(f)]
+
+    if missing:
+        # Still missing data — reply and continue conversation
+        reply = data.get("reply", f"Не хватает: {', '.join(missing)}. Расскажи!")
+        history.append({"role": "assistant", "content": reply})
+        await update.message.reply_text(reply)
+        return ONBOARDING
+
+    # All data collected — save user
+    # Convert height from m to cm if needed
+    if height < 3:
+        height = height * 100
+
+    bmr = 10 * weight + 6.25 * height - 5 * age - 161
+    tdee = bmr * 1.4
+    cal_target = max(1200, int(tdee - 400))
+    protein_target = int(weight * 1.6)
 
     await db.upsert_user(
         update.effective_user.id,
-        name=ud["name"],
-        weight_current=ud["weight"],
-        weight_goal=ud["goal"],
-        height=ud["height"],
-        age=ud["age"],
-        motivation_type=mtype,
+        name=name,
+        weight_current=weight,
+        weight_goal=goal,
+        height=int(height),
+        age=int(age),
+        motivation_type=motivation,
         daily_calories_target=cal_target,
         daily_protein_target=protein_target,
     )
-    await db.add_weight(update.effective_user.id, ud["weight"])
+    await db.add_weight(update.effective_user.id, weight)
 
-    style_names = {"supportive": "мягкая поддержка", "strict": "жёсткий тренер", "analytical": "аналитик"}
-
-    # Let Oleg introduce himself personally
+    # Let Oleg greet personally
     user_obj = await db.get_user(update.effective_user.id)
     today_stats = await db.get_today_stats(update.effective_user.id)
     greeting = await ai.coach_response(
-        f"Меня зовут {ud['name']}, я вешу {ud['weight']} кг, хочу {ud['goal']} кг. "
-        f"Мой план: {cal_target} ккал, {protein_target}г белка. Стиль мотивации: {style_names[mtype]}. "
-        f"Поприветствуй меня как новую подопечную, расскажи кратко план и что я могу делать (отправлять фото еды, "
-        f"писать что съела, команды /today /week /weight /activity /coach). Будь собой — Олегом.",
+        f"Я только что зарегистрировалась. Меня зовут {name}, мне {age}, вешу {weight} кг, хочу {goal} кг. "
+        f"Мой план: {cal_target} ккал, {protein_target}г белка в день. "
+        f"Поприветствуй меня, расскажи кратко что я могу делать (отправлять фото еды, "
+        f"писать что съела, команды /today /week /weight /coach). Будь собой.",
         dict(user_obj), today_stats
     )
     await update.message.reply_text(greeting, reply_markup=ReplyKeyboardRemove())
@@ -632,20 +635,18 @@ async def evening_reminder(ctx: ContextTypes.DEFAULT_TYPE):
 
 def main():
     import asyncio
+    from config import DB_PATH
+    log.info(f"DB_PATH = {DB_PATH}")
+    log.info(f"/data exists: {__import__('os').path.isdir('/data')}")
     asyncio.get_event_loop().run_until_complete(db.init_db())
 
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
-    # Onboarding conversation
+    # Onboarding conversation — single free-form state
     conv = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
-            NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, onboard_name)],
-            WEIGHT: [MessageHandler(filters.TEXT & ~filters.COMMAND, onboard_weight)],
-            HEIGHT: [MessageHandler(filters.TEXT & ~filters.COMMAND, onboard_height)],
-            AGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, onboard_age)],
-            GOAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, onboard_goal)],
-            MOTIVATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, onboard_motivation)],
+            ONBOARDING: [MessageHandler(filters.TEXT & ~filters.COMMAND, onboard_chat)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
     )

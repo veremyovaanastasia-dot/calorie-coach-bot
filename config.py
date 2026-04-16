@@ -11,4 +11,5 @@ if os.path.isdir("/data"):
 else:
     _default_db = "coach.db"
 DB_PATH = os.environ.get("DB_PATH", _default_db)
-CLAUDE_MODEL = "claude-sonnet-4-6"
+CLAUDE_MODEL_SMART = "claude-opus-4-6"      # coaching, conversations — smart
+CLAUDE_MODEL_FAST = "claude-sonnet-4-6"     # food analysis, activity — fast & cheap

@@ -51,6 +51,30 @@ async def init_db():
                 content TEXT,
                 created_at TEXT DEFAULT (datetime('now'))
             );
+            CREATE TABLE IF NOT EXISTS sleep_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                hours REAL,
+                quality TEXT,
+                note TEXT,
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+            CREATE TABLE IF NOT EXISTS mood_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                mood TEXT,
+                energy INTEGER,
+                note TEXT,
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+            CREATE TABLE IF NOT EXISTS cycle_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                day_of_cycle INTEGER,
+                phase TEXT,
+                note TEXT,
+                created_at TEXT DEFAULT (datetime('now'))
+            );
         """)
         await db.commit()
 
@@ -191,6 +215,129 @@ async def get_chat_history(user_id: int, limit: int = 20):
         ) as cur:
             rows = await cur.fetchall()
     return [{"role": r[0], "content": r[1]} for r in rows]
+
+
+async def add_sleep(user_id: int, hours: float, quality: str = None, note: str = None):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO sleep_log (user_id, hours, quality, note) VALUES (?, ?, ?, ?)",
+            (user_id, hours, quality, note)
+        )
+        await db.commit()
+
+
+async def add_mood(user_id: int, mood: str, energy: int = None, note: str = None):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO mood_log (user_id, mood, energy, note) VALUES (?, ?, ?, ?)",
+            (user_id, mood, energy, note)
+        )
+        await db.commit()
+
+
+async def add_cycle(user_id: int, day_of_cycle: int, phase: str = None, note: str = None):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO cycle_log (user_id, day_of_cycle, phase, note) VALUES (?, ?, ?, ?)",
+            (user_id, day_of_cycle, phase, note)
+        )
+        await db.commit()
+
+
+async def build_client_context(user_id: int) -> str:
+    """Build a comprehensive client context for the AI from ALL historical data."""
+    user = await get_user(user_id)
+    if not user:
+        return ""
+
+    parts = []
+    async with aiosqlite.connect(DB_PATH) as db:
+        # Weight trend (all time)
+        async with db.execute(
+            "SELECT weight, date(created_at) FROM weight_log WHERE user_id = ? ORDER BY created_at",
+            (user_id,)
+        ) as cur:
+            weights = await cur.fetchall()
+        if weights:
+            first_w, last_w = weights[0][0], weights[-1][0]
+            parts.append(f"Вес: {first_w} кг ({weights[0][1]}) → {last_w} кг ({weights[-1][1]}), изменение {last_w - first_w:+.1f} кг за {len(weights)} замеров")
+            if len(weights) >= 3:
+                recent = [w[0] for w in weights[-7:]]
+                trend = "снижается" if recent[-1] < recent[0] else "растёт" if recent[-1] > recent[0] else "стабильный"
+                parts.append(f"Тренд веса (последние замеры): {trend}")
+
+        # Weekly food averages (last 14 days)
+        async with db.execute(
+            "SELECT date(created_at) as day, SUM(calories), SUM(protein), COUNT(*) "
+            "FROM meals WHERE user_id = ? AND created_at >= date('now', '-14 days') "
+            "GROUP BY date(created_at) ORDER BY day",
+            (user_id,)
+        ) as cur:
+            daily_food = await cur.fetchall()
+        if daily_food:
+            avg_cal = sum(r[1] for r in daily_food) / len(daily_food)
+            avg_prot = sum(r[2] for r in daily_food) / len(daily_food)
+            avg_meals = sum(r[3] for r in daily_food) / len(daily_food)
+            parts.append(f"Питание (среднее за {len(daily_food)} дней): {avg_cal:.0f} ккал, {avg_prot:.0f}г белка, {avg_meals:.1f} приёмов/день")
+
+            # Find patterns: frequent foods
+            async with db.execute(
+                "SELECT description, COUNT(*) as cnt FROM meals WHERE user_id = ? "
+                "AND created_at >= date('now', '-14 days') GROUP BY description ORDER BY cnt DESC LIMIT 5",
+                (user_id,)
+            ) as cur:
+                top_foods = await cur.fetchall()
+            if top_foods:
+                foods_str = ", ".join(f"{f[0]} ({f[1]}x)" for f in top_foods)
+                parts.append(f"Частая еда: {foods_str}")
+
+        # Activity summary (last 14 days)
+        async with db.execute(
+            "SELECT COUNT(*), COALESCE(SUM(duration_min),0), COALESCE(SUM(calories_burned),0) "
+            "FROM activity_log WHERE user_id = ? AND created_at >= date('now', '-14 days')",
+            (user_id,)
+        ) as cur:
+            act = await cur.fetchone()
+        if act[0] > 0:
+            parts.append(f"Активность (14 дн): {act[0]} тренировок, {act[1]} мин, -{act[2]} ккал")
+
+        # Sleep (last 7 days)
+        async with db.execute(
+            "SELECT hours, quality, note, date(created_at) FROM sleep_log "
+            "WHERE user_id = ? AND created_at >= date('now', '-7 days') ORDER BY created_at",
+            (user_id,)
+        ) as cur:
+            sleeps = await cur.fetchall()
+        if sleeps:
+            avg_sleep = sum(s[0] for s in sleeps) / len(sleeps)
+            parts.append(f"Сон (7 дн): среднее {avg_sleep:.1f}ч за {len(sleeps)} записей")
+            last_sleep = sleeps[-1]
+            parts.append(f"Последний сон: {last_sleep[0]}ч" + (f", {last_sleep[1]}" if last_sleep[1] else "") + (f" — {last_sleep[2]}" if last_sleep[2] else ""))
+
+        # Mood (last 7 days)
+        async with db.execute(
+            "SELECT mood, energy, note, date(created_at) FROM mood_log "
+            "WHERE user_id = ? AND created_at >= date('now', '-7 days') ORDER BY created_at",
+            (user_id,)
+        ) as cur:
+            moods = await cur.fetchall()
+        if moods:
+            mood_list = [f"{m[3]}: {m[0]}" + (f" (энергия {m[1]}/10)" if m[1] else "") for m in moods[-5:]]
+            parts.append(f"Настроение (последние): {'; '.join(mood_list)}")
+
+        # Cycle (last entry)
+        async with db.execute(
+            "SELECT day_of_cycle, phase, note, date(created_at) FROM cycle_log "
+            "WHERE user_id = ? ORDER BY created_at DESC LIMIT 1",
+            (user_id,)
+        ) as cur:
+            cycle = await cur.fetchone()
+        if cycle:
+            parts.append(f"Цикл: день {cycle[0]}" + (f", фаза: {cycle[1]}" if cycle[1] else "") + (f" ({cycle[3]})" if cycle[3] else ""))
+
+    if not parts:
+        return ""
+    return "\n\n## ПОЛНЫЙ КОНТЕКСТ КЛИЕНТА (исторические данные)\n" + "\n".join(f"- {p}" for p in parts)
 
 
 async def get_progress(user_id: int):

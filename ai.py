@@ -125,8 +125,8 @@ ACTIVITY_PROMPT = """Пользователь описал активность:
 {{"activity_type": "тип", "duration_min": число, "calories_burned": число, "comment": "короткий комментарий"}}"""
 
 
-def _build_system(user: dict, today_stats: dict) -> str:
-    return (SYSTEM_COACH + EXPERT_KNOWLEDGE).format(
+def _build_system(user: dict, today_stats: dict, client_context: str = "") -> str:
+    base = (SYSTEM_COACH + EXPERT_KNOWLEDGE).format(
         name=user.get("name", "друг"),
         weight_current=user.get("weight_current", "?"),
         weight_goal=user.get("weight_goal", "?"),
@@ -136,9 +136,12 @@ def _build_system(user: dict, today_stats: dict) -> str:
         today_protein=today_stats.get("protein", 0),
         motivation_type=user.get("motivation_type", "supportive"),
     )
+    if client_context:
+        base += client_context
+    return base
 
 
-async def analyze_food_photo(photo_bytes: bytes, user: dict, today_stats: dict, caption: str = None) -> dict:
+async def analyze_food_photo(photo_bytes: bytes, user: dict, today_stats: dict, caption: str = None, client_context: str = "") -> dict:
     b64 = base64.standard_b64encode(photo_bytes).decode()
     content = [
         {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}},
@@ -147,17 +150,17 @@ async def analyze_food_photo(photo_bytes: bytes, user: dict, today_stats: dict, 
     resp = client.messages.create(
         model=CLAUDE_MODEL,
         max_tokens=500,
-        system=_build_system(user, today_stats),
+        system=_build_system(user, today_stats, client_context),
         messages=[{"role": "user", "content": content}],
     )
     return _parse_json(resp.content[0].text)
 
 
-async def analyze_food_text(text: str, user: dict, today_stats: dict) -> dict:
+async def analyze_food_text(text: str, user: dict, today_stats: dict, client_context: str = "") -> dict:
     resp = client.messages.create(
         model=CLAUDE_MODEL,
         max_tokens=500,
-        system=_build_system(user, today_stats),
+        system=_build_system(user, today_stats, client_context),
         messages=[{"role": "user", "content": FOOD_ANALYSIS_PROMPT + f"\nЕда: {text}"}],
     )
     return _parse_json(resp.content[0].text)
@@ -172,7 +175,7 @@ async def analyze_activity(text: str) -> dict:
     return _parse_json(resp.content[0].text)
 
 
-async def coach_response(text: str, user: dict, today_stats: dict, history: list = None) -> str:
+async def coach_response(text: str, user: dict, today_stats: dict, history: list = None, client_context: str = "") -> str:
     messages = []
     if history:
         messages.extend(history)
@@ -180,13 +183,13 @@ async def coach_response(text: str, user: dict, today_stats: dict, history: list
     resp = client.messages.create(
         model=CLAUDE_MODEL,
         max_tokens=800,
-        system=_build_system(user, today_stats),
+        system=_build_system(user, today_stats, client_context),
         messages=messages,
     )
     return resp.content[0].text
 
 
-async def comment_food(food_data: dict, user: dict, today_stats: dict, history: list = None) -> str:
+async def comment_food(food_data: dict, user: dict, today_stats: dict, history: list = None, client_context: str = "") -> str:
     remaining = user.get("daily_calories_target", 1800) - today_stats.get("calories", 0)
     prompt = (
         f"Я только что съела: {food_data.get('dish', '?')} — {food_data.get('calories', 0)} ккал, "
@@ -195,17 +198,17 @@ async def comment_food(food_data: dict, user: dict, today_stats: dict, history: 
         f"Осталось на сегодня: {remaining} ккал. "
         f"Прокомментируй кратко как мой коуч — 2-3 предложения макс."
     )
-    return await coach_response(prompt, user, today_stats, history)
+    return await coach_response(prompt, user, today_stats, history, client_context)
 
 
-async def daily_summary(user: dict, today_stats: dict) -> str:
+async def daily_summary(user: dict, today_stats: dict, client_context: str = "") -> str:
     prompt = (
         f"Подведи итог дня. Съедено {today_stats['calories']} ккал из {user.get('daily_calories_target', 1800)}, "
         f"белок {today_stats['protein']} г из {user.get('daily_protein_target', 100)}, "
         f"приёмов пищи: {today_stats['meal_count']}, сожжено активностью: {today_stats['calories_burned']} ккал. "
         f"Дай краткий вердикт и совет на завтра."
     )
-    return await coach_response(prompt, user, today_stats)
+    return await coach_response(prompt, user, today_stats, client_context=client_context)
 
 
 def _parse_json(text: str) -> dict:

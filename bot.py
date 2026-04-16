@@ -163,8 +163,9 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     photo_bytes = buf.getvalue()
 
     today_stats = await db.get_today_stats(update.effective_user.id)
+    client_context = await db.build_client_context(update.effective_user.id)
     caption = update.message.caption or ""
-    result = await ai.analyze_food_photo(photo_bytes, dict(user), today_stats, caption)
+    result = await ai.analyze_food_photo(photo_bytes, dict(user), today_stats, caption, client_context)
 
     if "error" in result:
         await msg.edit_text(f"Не удалось распознать: {result['error']}")
@@ -191,7 +192,7 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
     history = await db.get_chat_history(update.effective_user.id)
-    comment = await ai.comment_food(result, dict(user), today_stats, history)
+    comment = await ai.comment_food(result, dict(user), today_stats, history, client_context)
 
     full_text = nutrition + comment
 
@@ -211,19 +212,54 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     text = update.message.text.strip()
+    text_lower = text.lower()
     today_stats = await db.get_today_stats(update.effective_user.id)
+    client_context = await db.build_client_context(update.effective_user.id)
+
+    # Auto-detect sleep logging
+    sleep_keywords = ["спала", "спал", "сон", "проснул", "выспал", "не выспал", "бессонниц", "часов сна"]
+    is_sleep = any(kw in text_lower for kw in sleep_keywords)
+    if is_sleep:
+        # Try to extract hours from text
+        import re
+        hours_match = re.search(r'(\d+[.,]?\d*)\s*(?:час|ч\.?|hrs?)', text_lower)
+        if hours_match:
+            hours = float(hours_match.group(1).replace(",", "."))
+            quality = "плохо" if any(w in text_lower for w in ["плохо", "не выспал", "бессонниц", "ужасно"]) else \
+                      "отлично" if any(w in text_lower for w in ["отлично", "супер", "класс", "выспал"]) else "нормально"
+            await db.add_sleep(update.effective_user.id, hours, quality, text)
+
+    # Auto-detect mood
+    mood_keywords = ["настроен", "чувствую", "устала", "устал", "бодр", "энерги", "тревог", "стресс",
+                     "грустн", "злюсь", "раздраж", "счастлив", "хорошо себя", "плохо себя", "апати"]
+    is_mood = any(kw in text_lower for kw in mood_keywords)
+    if is_mood:
+        mood = "плохое" if any(w in text_lower for w in ["устал", "плохо", "грустн", "тревог", "стресс", "апати", "злюсь", "раздраж"]) else \
+               "отличное" if any(w in text_lower for w in ["супер", "отличн", "счастлив", "бодр", "энерги"]) else "нормальное"
+        await db.add_mood(update.effective_user.id, mood, note=text)
+
+    # Auto-detect cycle
+    cycle_keywords = ["цикл", "месячн", "пмс", "менструац", "день цикла", "критическ", "овуляц"]
+    is_cycle = any(kw in text_lower for kw in cycle_keywords)
+    if is_cycle:
+        import re
+        day_match = re.search(r'(\d+)\s*день', text_lower) or re.search(r'день\s*(\d+)', text_lower)
+        if day_match:
+            day = int(day_match.group(1))
+            phase = "менструальная" if day <= 5 else "фолликулярная" if day <= 14 else "лютеиновая"
+            await db.add_cycle(update.effective_user.id, day, phase, text)
 
     # Check if it's a coaching question or food
     food_keywords = ["съел", "съела", "ел", "ела", "пил", "пила", "завтрак", "обед", "ужин",
                      "перекус", "каша", "салат", "суп", "кофе", "чай", "бутерброд", "йогурт",
                      "яйц", "курица", "рис", "гречка", "овсянка", "банан", "яблок"]
-    is_food = any(kw in text.lower() for kw in food_keywords)
+    is_food = any(kw in text_lower for kw in food_keywords) and not (is_sleep or is_mood or is_cycle)
 
     history = await db.get_chat_history(update.effective_user.id)
 
     if is_food:
         msg = await update.message.reply_text("Записываю...")
-        result = await ai.analyze_food_text(text, dict(user), today_stats)
+        result = await ai.analyze_food_text(text, dict(user), today_stats, client_context)
 
         if "error" in result:
             await msg.edit_text(f"Не понял: {result['error']}\nПопробуй описать конкретнее.")
@@ -247,16 +283,16 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"Итого за день: {today_stats['calories']}/{user['daily_calories_target']} ккал | осталось {remaining}\n\n"
         )
 
-        comment = await ai.comment_food(result, dict(user), today_stats, history)
+        comment = await ai.comment_food(result, dict(user), today_stats, history, client_context)
         reply = nutrition + comment
 
         await db.add_chat_message(update.effective_user.id, "user", text)
         await db.add_chat_message(update.effective_user.id, "assistant", reply)
         await msg.edit_text(reply)
     else:
-        # Coach mode with full conversation history
+        # Coach mode with full conversation history + client context
         await db.add_chat_message(update.effective_user.id, "user", text)
-        response = await ai.coach_response(text, dict(user), today_stats, history)
+        response = await ai.coach_response(text, dict(user), today_stats, history, client_context)
         await db.add_chat_message(update.effective_user.id, "assistant", response)
         await update.message.reply_text(response)
 
@@ -467,11 +503,90 @@ async def cmd_coach(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     today_stats = await db.get_today_stats(update.effective_user.id)
     history = await db.get_chat_history(update.effective_user.id)
+    client_context = await db.build_client_context(update.effective_user.id)
     prompt = " ".join(ctx.args) if ctx.args else "Дай мне совет на сегодня. Что мне поесть и как тренироваться?"
-    response = await ai.coach_response(prompt, dict(user), today_stats, history)
+    response = await ai.coach_response(prompt, dict(user), today_stats, history, client_context)
     await db.add_chat_message(update.effective_user.id, "user", prompt)
     await db.add_chat_message(update.effective_user.id, "assistant", response)
     await update.message.reply_text(response)
+
+
+# ── /sleep ──────────────────────────────────────────────────────
+
+async def cmd_sleep(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    user = await db.get_user(update.effective_user.id)
+    if not user:
+        await update.message.reply_text("Сначала /start")
+        return
+    if not ctx.args:
+        await update.message.reply_text("Сколько спала: /sleep 7.5\nИли с пометкой: /sleep 6 плохо")
+        return
+    try:
+        hours = float(ctx.args[0].replace(",", "."))
+    except ValueError:
+        await update.message.reply_text("Введи число часов: /sleep 7.5")
+        return
+    quality = " ".join(ctx.args[1:]) if len(ctx.args) > 1 else None
+    await db.add_sleep(update.effective_user.id, hours, quality)
+    today_stats = await db.get_today_stats(update.effective_user.id)
+    client_context = await db.build_client_context(update.effective_user.id)
+    history = await db.get_chat_history(update.effective_user.id)
+    response = await ai.coach_response(
+        f"Я спала {hours} часов" + (f", качество: {quality}" if quality else "") + ". Прокомментируй кратко.",
+        dict(user), today_stats, history, client_context
+    )
+    await update.message.reply_text(f"Записано: {hours}ч сна" + (f" ({quality})" if quality else "") + f"\n\n{response}")
+
+
+# ── /mood ───────────────────────────────────────────────────────
+
+async def cmd_mood(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    user = await db.get_user(update.effective_user.id)
+    if not user:
+        await update.message.reply_text("Сначала /start")
+        return
+    if not ctx.args:
+        await update.message.reply_text("Как настроение: /mood отлично\nИли: /mood устала после работы")
+        return
+    mood_text = " ".join(ctx.args)
+    await db.add_mood(update.effective_user.id, mood_text)
+    today_stats = await db.get_today_stats(update.effective_user.id)
+    client_context = await db.build_client_context(update.effective_user.id)
+    history = await db.get_chat_history(update.effective_user.id)
+    response = await ai.coach_response(
+        f"Моё настроение сейчас: {mood_text}. Прокомментируй как коуч, кратко.",
+        dict(user), today_stats, history, client_context
+    )
+    await update.message.reply_text(response)
+
+
+# ── /cycle ──────────────────────────────────────────────────────
+
+async def cmd_cycle(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    user = await db.get_user(update.effective_user.id)
+    if not user:
+        await update.message.reply_text("Сначала /start")
+        return
+    if not ctx.args:
+        await update.message.reply_text("День цикла: /cycle 14\nИли: /cycle 3 болит живот")
+        return
+    try:
+        day = int(ctx.args[0])
+    except ValueError:
+        await update.message.reply_text("Введи номер дня: /cycle 14")
+        return
+    phase = "менструальная" if day <= 5 else "фолликулярная" if day <= 14 else "лютеиновая"
+    note = " ".join(ctx.args[1:]) if len(ctx.args) > 1 else None
+    await db.add_cycle(update.effective_user.id, day, phase, note)
+    today_stats = await db.get_today_stats(update.effective_user.id)
+    client_context = await db.build_client_context(update.effective_user.id)
+    history = await db.get_chat_history(update.effective_user.id)
+    response = await ai.coach_response(
+        f"У меня {day} день цикла ({phase} фаза)" + (f", {note}" if note else "") +
+        ". Дай рекомендации по тренировкам и питанию с учётом фазы цикла.",
+        dict(user), today_stats, history, client_context
+    )
+    await update.message.reply_text(f"📅 День {day} ({phase} фаза)\n\n{response}")
 
 
 # ── /goal ───────────────────────────────────────────────────────────
@@ -544,6 +659,9 @@ def main():
     app.add_handler(CommandHandler("progress", cmd_progress))
     app.add_handler(CommandHandler("coach", cmd_coach))
     app.add_handler(CommandHandler("goal", cmd_goal))
+    app.add_handler(CommandHandler("sleep", cmd_sleep))
+    app.add_handler(CommandHandler("mood", cmd_mood))
+    app.add_handler(CommandHandler("cycle", cmd_cycle))
 
     # Photo handler
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))

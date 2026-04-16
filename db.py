@@ -269,7 +269,7 @@ async def build_client_context(user_id: int) -> str:
         # Weekly food averages (last 14 days)
         async with db.execute(
             "SELECT date(created_at) as day, SUM(calories), SUM(protein), COUNT(*) "
-            "FROM meals WHERE user_id = ? AND created_at >= date('now', '-14 days') "
+            "FROM meals WHERE user_id = ? AND created_at >= date('now', '-90 days') "
             "GROUP BY date(created_at) ORDER BY day",
             (user_id,)
         ) as cur:
@@ -283,7 +283,7 @@ async def build_client_context(user_id: int) -> str:
             # Find patterns: frequent foods
             async with db.execute(
                 "SELECT description, COUNT(*) as cnt FROM meals WHERE user_id = ? "
-                "AND created_at >= date('now', '-14 days') GROUP BY description ORDER BY cnt DESC LIMIT 5",
+                "AND created_at >= date('now', '-90 days') GROUP BY description ORDER BY cnt DESC LIMIT 5",
                 (user_id,)
             ) as cur:
                 top_foods = await cur.fetchall()
@@ -294,7 +294,7 @@ async def build_client_context(user_id: int) -> str:
         # Activity summary (last 14 days)
         async with db.execute(
             "SELECT COUNT(*), COALESCE(SUM(duration_min),0), COALESCE(SUM(calories_burned),0) "
-            "FROM activity_log WHERE user_id = ? AND created_at >= date('now', '-14 days')",
+            "FROM activity_log WHERE user_id = ? AND created_at >= date('now', '-90 days')",
             (user_id,)
         ) as cur:
             act = await cur.fetchone()

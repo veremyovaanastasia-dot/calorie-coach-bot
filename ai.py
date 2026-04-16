@@ -2,7 +2,7 @@ import json
 import base64
 import anthropic
 from config import ANTHROPIC_API_KEY, CLAUDE_MODEL
-from knowledge import EXPERT_KNOWLEDGE
+from knowledge import EXPERT_KNOWLEDGE, MONDAY_CHANNEL_KNOWLEDGE
 
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
@@ -126,7 +126,7 @@ ACTIVITY_PROMPT = """Пользователь описал активность:
 
 
 def _build_system(user: dict, today_stats: dict, client_context: str = "") -> str:
-    base = (SYSTEM_COACH + EXPERT_KNOWLEDGE).format(
+    base = (SYSTEM_COACH + EXPERT_KNOWLEDGE + MONDAY_CHANNEL_KNOWLEDGE).format(
         name=user.get("name", "друг"),
         weight_current=user.get("weight_current", "?"),
         weight_goal=user.get("weight_goal", "?"),

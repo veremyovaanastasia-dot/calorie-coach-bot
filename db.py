@@ -44,6 +44,13 @@ async def init_db():
                 calories_burned INTEGER,
                 created_at TEXT DEFAULT (datetime('now'))
             );
+            CREATE TABLE IF NOT EXISTS chat_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                role TEXT,
+                content TEXT,
+                created_at TEXT DEFAULT (datetime('now'))
+            );
         """)
         await db.commit()
 
@@ -162,6 +169,28 @@ async def get_week_stats(user_id: int):
         "weights": [(r[0], r[1]) for r in weights],
         "activities": [(r[0], int(r[1]), int(r[2])) for r in activities],
     }
+
+
+async def add_chat_message(user_id: int, role: str, content: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO chat_history (user_id, role, content) VALUES (?, ?, ?)",
+            (user_id, role, content)
+        )
+        await db.commit()
+
+
+async def get_chat_history(user_id: int, limit: int = 20):
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT role, content FROM ("
+            "  SELECT role, content, id FROM chat_history "
+            "  WHERE user_id = ? ORDER BY id DESC LIMIT ?"
+            ") ORDER BY id ASC",
+            (user_id, limit)
+        ) as cur:
+            rows = await cur.fetchall()
+    return [{"role": r[0], "content": r[1]} for r in rows]
 
 
 async def get_progress(user_id: int):

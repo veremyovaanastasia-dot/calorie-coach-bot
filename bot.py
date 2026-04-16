@@ -28,9 +28,22 @@ NAME, WEIGHT, HEIGHT, AGE, GOAL, MOTIVATION = range(6)
 # ── /start onboarding ──────────────────────────────────────────────
 
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    user = await db.get_user(update.effective_user.id)
+    if user:
+        # User already exists — just greet them back
+        today_stats = await db.get_today_stats(update.effective_user.id)
+        history = await db.get_chat_history(update.effective_user.id)
+        response = await ai.coach_response(
+            "Пользователь нажал /start заново. Поприветствуй как старого знакомого, напомни что ты тут и готов помогать.",
+            dict(user), today_stats, history
+        )
+        await update.message.reply_text(response)
+        return ConversationHandler.END
     await update.message.reply_text(
-        "Привет! Я твой персональный коуч по питанию и похудению.\n\n"
-        "Давай познакомимся. Как тебя зовут?"
+        "Йо! Олег на связи 🤙\n\n"
+        "Я буду твоим личным коучем — калории считать, за белком следить, "
+        "мотивировать когда лень, и пинать когда надо.\n\n"
+        "Давай знакомиться. Как тебя зовут?"
     )
     return NAME
 
@@ -115,22 +128,18 @@ async def onboard_motivation(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await db.add_weight(update.effective_user.id, ud["weight"])
 
     style_names = {"supportive": "мягкая поддержка", "strict": "жёсткий тренер", "analytical": "аналитик"}
-    await update.message.reply_text(
-        f"Готово! Вот твой план:\n\n"
-        f"📊 Текущий вес: {ud['weight']} кг → цель: {ud['goal']} кг\n"
-        f"🔥 Дневная норма: {cal_target} ккал\n"
-        f"🥩 Белок: {protein_target} г\n"
-        f"💬 Стиль: {style_names[mtype]}\n\n"
-        f"Теперь просто отправляй мне фото еды или пиши что съела — я посчитаю калории.\n\n"
-        f"Команды:\n"
-        f"/today — итог дня\n"
-        f"/week — неделя\n"
-        f"/progress — полный прогресс\n"
-        f"/weight 67 — записать вес\n"
-        f"/activity бег 30мин — записать тренировку\n"
-        f"/coach — попросить совет",
-        reply_markup=ReplyKeyboardRemove(),
+
+    # Let Oleg introduce himself personally
+    user_obj = await db.get_user(update.effective_user.id)
+    today_stats = await db.get_today_stats(update.effective_user.id)
+    greeting = await ai.coach_response(
+        f"Меня зовут {ud['name']}, я вешу {ud['weight']} кг, хочу {ud['goal']} кг. "
+        f"Мой план: {cal_target} ккал, {protein_target}г белка. Стиль мотивации: {style_names[mtype]}. "
+        f"Поприветствуй меня как новую подопечную, расскажи кратко план и что я могу делать (отправлять фото еды, "
+        f"писать что съела, команды /today /week /weight /activity /coach). Будь собой — Олегом.",
+        dict(user_obj), today_stats
     )
+    await update.message.reply_text(greeting, reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
 async def cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -146,7 +155,7 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Сначала пройди /start")
         return
 
-    msg = await update.message.reply_text("Анализирую фото...")
+    msg = await update.message.reply_text("Секунду, смотрю что тут...")
     photo = update.message.photo[-1]
     file = await ctx.bot.get_file(photo.file_id)
     buf = io.BytesIO()
@@ -174,18 +183,23 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     today_stats = await db.get_today_stats(update.effective_user.id)
     remaining = user["daily_calories_target"] - today_stats["calories"]
 
-    text = (
-        f"🍽 {result.get('dish', 'Блюдо')}\n"
-        f"   {result.get('portion', '')}\n\n"
-        f"🔥 {result['calories']} ккал\n"
-        f"🥩 Белок: {result['protein']} г\n"
-        f"🍞 Углеводы: {result['carbs']} г\n"
-        f"🧈 Жиры: {result['fat']} г\n\n"
+    # Compact nutrition line + Oleg's live comment
+    nutrition = (
+        f"📝 {result.get('dish', 'Блюдо')} — {result['calories']} ккал\n"
+        f"Б {result['protein']}г | У {result['carbs']}г | Ж {result['fat']}г\n"
+        f"Итого за день: {today_stats['calories']}/{user['daily_calories_target']} ккал | осталось {remaining}\n\n"
     )
-    if result.get("comment"):
-        text += f"💬 {result['comment']}\n\n"
-    text += f"📊 Итого за день: {today_stats['calories']} ккал | осталось: {remaining} ккал"
-    await msg.edit_text(text)
+
+    history = await db.get_chat_history(update.effective_user.id)
+    comment = await ai.comment_food(result, dict(user), today_stats, history)
+
+    full_text = nutrition + comment
+
+    # Save to chat history
+    await db.add_chat_message(update.effective_user.id, "user", f"[отправила фото еды: {result.get('dish', caption)}]")
+    await db.add_chat_message(update.effective_user.id, "assistant", full_text)
+
+    await msg.edit_text(full_text)
 
 
 # ── Food logging (text) ────────────────────────────────────────────
@@ -205,8 +219,10 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                      "яйц", "курица", "рис", "гречка", "овсянка", "банан", "яблок"]
     is_food = any(kw in text.lower() for kw in food_keywords)
 
+    history = await db.get_chat_history(update.effective_user.id)
+
     if is_food:
-        msg = await update.message.reply_text("Считаю калории...")
+        msg = await update.message.reply_text("Записываю...")
         result = await ai.analyze_food_text(text, dict(user), today_stats)
 
         if "error" in result:
@@ -225,18 +241,23 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         today_stats = await db.get_today_stats(update.effective_user.id)
         remaining = user["daily_calories_target"] - today_stats["calories"]
 
-        reply = (
-            f"🍽 {result.get('dish', text)}\n\n"
-            f"🔥 {result['calories']} ккал\n"
-            f"🥩 Белок: {result['protein']} г | 🍞 Углеводы: {result['carbs']} г | 🧈 Жиры: {result['fat']} г\n"
+        nutrition = (
+            f"📝 {result.get('dish', text)} — {result['calories']} ккал\n"
+            f"Б {result['protein']}г | У {result['carbs']}г | Ж {result['fat']}г\n"
+            f"Итого за день: {today_stats['calories']}/{user['daily_calories_target']} ккал | осталось {remaining}\n\n"
         )
-        if result.get("comment"):
-            reply += f"\n💬 {result['comment']}\n"
-        reply += f"\n📊 Итого за день: {today_stats['calories']} ккал | осталось: {remaining} ккал"
+
+        comment = await ai.comment_food(result, dict(user), today_stats, history)
+        reply = nutrition + comment
+
+        await db.add_chat_message(update.effective_user.id, "user", text)
+        await db.add_chat_message(update.effective_user.id, "assistant", reply)
         await msg.edit_text(reply)
     else:
-        # Coach mode
-        response = await ai.coach_response(text, dict(user), today_stats)
+        # Coach mode with full conversation history
+        await db.add_chat_message(update.effective_user.id, "user", text)
+        response = await ai.coach_response(text, dict(user), today_stats, history)
+        await db.add_chat_message(update.effective_user.id, "assistant", response)
         await update.message.reply_text(response)
 
 
@@ -445,8 +466,11 @@ async def cmd_coach(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Сначала /start")
         return
     today_stats = await db.get_today_stats(update.effective_user.id)
+    history = await db.get_chat_history(update.effective_user.id)
     prompt = " ".join(ctx.args) if ctx.args else "Дай мне совет на сегодня. Что мне поесть и как тренироваться?"
-    response = await ai.coach_response(prompt, dict(user), today_stats)
+    response = await ai.coach_response(prompt, dict(user), today_stats, history)
+    await db.add_chat_message(update.effective_user.id, "user", prompt)
+    await db.add_chat_message(update.effective_user.id, "assistant", response)
     await update.message.reply_text(response)
 
 

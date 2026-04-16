@@ -91,6 +91,36 @@ ACTIVITY_PROMPT = """Пользователь описал активность:
 {{"activity_type": "тип", "duration_min": число, "calories_burned": число, "comment": "короткий комментарий"}}"""
 
 
+# ── Message classifier (fast, cheap — Haiku) ────────────────────────
+
+CLASSIFY_PROMPT = """Classify this message into ONE category. Reply with ONLY the category word, nothing else.
+
+Categories:
+- "food" — user is REPORTING what they ate/drank RIGHT NOW (e.g. "съела салат", "на обед была гречка с курицей", "выпила кофе с молоком"). Must be a concrete meal report, not just mentioning food in conversation.
+- "sleep" — user is reporting sleep (e.g. "спала 7 часов", "не выспалась")
+- "mood" — user is reporting mood/energy (e.g. "устала", "настроение отличное")
+- "cycle" — user is reporting menstrual cycle (e.g. "5 день цикла")
+- "chat" — everything else: questions, conversation, plans, discussing food in general, asking advice
+
+IMPORTANT: If unsure, choose "chat". Only choose "food" if the user is clearly logging a specific meal they already ate.
+
+Message: "{text}"
+Category:"""
+
+
+async def classify_message(text: str) -> str:
+    """Classify user message intent using Haiku (fast + cheap)."""
+    resp = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=10,
+        messages=[{"role": "user", "content": CLASSIFY_PROMPT.format(text=text)}],
+    )
+    category = resp.content[0].text.strip().lower().strip('"')
+    if category in ("food", "sleep", "mood", "cycle"):
+        return category
+    return "chat"
+
+
 # ── System prompt builders ───────────────────────────────────────────
 
 def _build_coach_system(user: dict, today_stats: dict, client_context: str = "") -> str:

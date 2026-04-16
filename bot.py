@@ -229,53 +229,22 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     today_stats = await db.get_today_stats(update.effective_user.id)
     client_context = await db.build_client_context(update.effective_user.id)
 
-    # Auto-detect sleep logging
-    sleep_keywords = ["спала", "спал", "сон", "проснул", "выспал", "не выспал", "бессонниц", "часов сна"]
-    is_sleep = any(kw in text_lower for kw in sleep_keywords)
-    if is_sleep:
-        # Try to extract hours from text
-        import re
-        hours_match = re.search(r'(\d+[.,]?\d*)\s*(?:час|ч\.?|hrs?)', text_lower)
-        if hours_match:
-            hours = float(hours_match.group(1).replace(",", "."))
-            quality = "плохо" if any(w in text_lower for w in ["плохо", "не выспал", "бессонниц", "ужасно"]) else \
-                      "отлично" if any(w in text_lower for w in ["отлично", "супер", "класс", "выспал"]) else "нормально"
-            await db.add_sleep(update.effective_user.id, hours, quality, text)
-
-    # Auto-detect mood
-    mood_keywords = ["настроен", "чувствую", "устала", "устал", "бодр", "энерги", "тревог", "стресс",
-                     "грустн", "злюсь", "раздраж", "счастлив", "хорошо себя", "плохо себя", "апати"]
-    is_mood = any(kw in text_lower for kw in mood_keywords)
-    if is_mood:
-        mood = "плохое" if any(w in text_lower for w in ["устал", "плохо", "грустн", "тревог", "стресс", "апати", "злюсь", "раздраж"]) else \
-               "отличное" if any(w in text_lower for w in ["супер", "отличн", "счастлив", "бодр", "энерги"]) else "нормальное"
-        await db.add_mood(update.effective_user.id, mood, note=text)
-
-    # Auto-detect cycle
-    cycle_keywords = ["цикл", "месячн", "пмс", "менструац", "день цикла", "критическ", "овуляц"]
-    is_cycle = any(kw in text_lower for kw in cycle_keywords)
-    if is_cycle:
-        import re
-        day_match = re.search(r'(\d+)\s*день', text_lower) or re.search(r'день\s*(\d+)', text_lower)
-        if day_match:
-            day = int(day_match.group(1))
-            phase = "менструальная" if day <= 5 else "фолликулярная" if day <= 14 else "лютеиновая"
-            await db.add_cycle(update.effective_user.id, day, phase, text)
-
-    # Check if it's a coaching question or food
-    food_keywords = ["съел", "съела", "ел", "ела", "пил", "пила", "завтрак", "обед", "ужин",
-                     "перекус", "каша", "салат", "суп", "кофе", "чай", "бутерброд", "йогурт",
-                     "яйц", "курица", "рис", "гречка", "овсянка", "банан", "яблок"]
-    is_food = any(kw in text_lower for kw in food_keywords) and not (is_sleep or is_mood or is_cycle)
-
     history = await db.get_chat_history(update.effective_user.id)
 
-    if is_food:
+    # Let AI classify the message instead of dumb keyword matching
+    intent = await ai.classify_message(text)
+
+    if intent == "food":
         msg = await update.message.reply_text("Записываю...")
         result = await ai.analyze_food_text(text, dict(user), today_stats, client_context)
 
         if "error" in result:
-            await msg.edit_text(f"Не понял: {result['error']}\nПопробуй описать конкретнее.")
+            # AI couldn't parse as food — treat as regular chat
+            await msg.edit_text("...")
+            await db.add_chat_message(update.effective_user.id, "user", text)
+            response = await ai.coach_response(text, dict(user), today_stats, history, client_context)
+            await db.add_chat_message(update.effective_user.id, "assistant", response)
+            await msg.edit_text(response)
             return
 
         await db.add_meal(
@@ -302,8 +271,44 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await db.add_chat_message(update.effective_user.id, "user", text)
         await db.add_chat_message(update.effective_user.id, "assistant", reply)
         await msg.edit_text(reply)
+
+    elif intent == "sleep":
+        import re
+        hours_match = re.search(r'(\d+[.,]?\d*)\s*(?:час|ч\.?|hrs?)', text_lower)
+        if hours_match:
+            hours = float(hours_match.group(1).replace(",", "."))
+            quality = "плохо" if any(w in text_lower for w in ["плохо", "не выспал", "бессонниц", "ужасно"]) else \
+                      "отлично" if any(w in text_lower for w in ["отлично", "супер", "класс", "выспал"]) else "нормально"
+            await db.add_sleep(update.effective_user.id, hours, quality, text)
+        # Always respond as coach
+        await db.add_chat_message(update.effective_user.id, "user", text)
+        response = await ai.coach_response(text, dict(user), today_stats, history, client_context)
+        await db.add_chat_message(update.effective_user.id, "assistant", response)
+        await update.message.reply_text(response)
+
+    elif intent == "mood":
+        mood = "плохое" if any(w in text_lower for w in ["устал", "плохо", "грустн", "тревог", "стресс", "апати", "злюсь", "раздраж"]) else \
+               "отличное" if any(w in text_lower for w in ["супер", "отличн", "счастлив", "бодр", "энерги"]) else "нормальное"
+        await db.add_mood(update.effective_user.id, mood, note=text)
+        await db.add_chat_message(update.effective_user.id, "user", text)
+        response = await ai.coach_response(text, dict(user), today_stats, history, client_context)
+        await db.add_chat_message(update.effective_user.id, "assistant", response)
+        await update.message.reply_text(response)
+
+    elif intent == "cycle":
+        import re
+        day_match = re.search(r'(\d+)\s*день', text_lower) or re.search(r'день\s*(\d+)', text_lower)
+        if day_match:
+            day = int(day_match.group(1))
+            phase = "менструальная" if day <= 5 else "фолликулярная" if day <= 14 else "лютеиновая"
+            await db.add_cycle(update.effective_user.id, day, phase, text)
+        await db.add_chat_message(update.effective_user.id, "user", text)
+        response = await ai.coach_response(text, dict(user), today_stats, history, client_context)
+        await db.add_chat_message(update.effective_user.id, "assistant", response)
+        await update.message.reply_text(response)
+
     else:
-        # Coach mode with full conversation history + client context
+        # Regular chat / coaching
         await db.add_chat_message(update.effective_user.id, "user", text)
         response = await ai.coach_response(text, dict(user), today_stats, history, client_context)
         await db.add_chat_message(update.effective_user.id, "assistant", response)

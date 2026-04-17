@@ -315,9 +315,14 @@ async def update_pinned_summary(user_id: int, bot):
         text = f"📌 СЕГОДНЯ — {date_str}\n"
 
         # ── Weight ──
-        if user.get("weight_current") and user.get("weight_goal"):
-            diff = user["weight_current"] - user["weight_goal"]
-            text += f"\n⚖️ Вес: {user['weight_current']} кг (до цели {user['weight_goal']}: {diff:+.1f})\n"
+        w_cur = user.get("weight_current")
+        w_goal = user.get("weight_goal")
+        if w_cur is not None:
+            w_line = f"\n⚖️ Вес: {w_cur} кг"
+            if w_goal is not None:
+                diff = w_cur - w_goal
+                w_line += f" (до цели {w_goal}: {diff:+.1f})"
+            text += w_line + "\n"
 
         # ── Cycle ──
         if cycle:

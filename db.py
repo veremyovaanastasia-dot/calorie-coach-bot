@@ -92,12 +92,12 @@ async def init_db():
                 created_at TEXT
             );
         """)
-        # Migration: add pinned_message_id column if missing
-        try:
-            await db.execute("ALTER TABLE users ADD COLUMN pinned_message_id INTEGER")
-            await db.execute("ALTER TABLE users ADD COLUMN pinned_date TEXT")
-        except Exception:
-            pass  # columns already exist
+        # Migration: add pinned columns if missing
+        for col in ["pinned_message_id INTEGER", "pinned_date TEXT"]:
+            try:
+                await db.execute(f"ALTER TABLE users ADD COLUMN {col}")
+            except Exception:
+                pass
         await db.commit()
 
 

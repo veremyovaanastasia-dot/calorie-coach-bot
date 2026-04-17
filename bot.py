@@ -333,20 +333,28 @@ async def update_pinned_summary(user_id: int, bot):
             except Exception:
                 pass
 
-    # Unpin old message if it's from a different day
+    # Unpin and delete old message if it's from a different day
     if pinned_id and pinned_date != today:
         try:
             await bot.unpin_chat_message(chat_id=user_id, message_id=int(pinned_id))
         except Exception:
             pass
+        try:
+            await bot.delete_message(chat_id=user_id, message_id=int(pinned_id))
+        except Exception:
+            pass
 
-    # Send new message and pin it
+    # Send new message, save ID first, then try to pin
     try:
         msg = await bot.send_message(user_id, text)
-        await bot.pin_chat_message(chat_id=user_id, message_id=msg.message_id, disable_notification=True)
+        # Save ID FIRST — so next time we can edit even if pin fails
         await db.upsert_user(user_id, pinned_message_id=msg.message_id, pinned_date=today)
+        try:
+            await bot.pin_chat_message(chat_id=user_id, message_id=msg.message_id, disable_notification=True)
+        except Exception as e:
+            log.warning(f"Could not pin message for {user_id}: {e}")
     except Exception as e:
-        log.error(f"Failed to pin summary for {user_id}: {e}")
+        log.error(f"Failed to send summary for {user_id}: {e}")
 
 
 async def _get_today_meals_list(user_id: int) -> list:

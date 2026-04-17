@@ -1,6 +1,7 @@
 import io
 import logging
 from datetime import time as dtime
+from zoneinfo import ZoneInfo
 
 import matplotlib
 matplotlib.use("Agg")
@@ -852,8 +853,8 @@ def main():
     # Text handler (food or coach)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-    # Evening coaching check-in at 22:00 MSK (19:00 UTC)
-    app.job_queue.run_daily(evening_checkin, time=dtime(hour=19, minute=0))
+    # Evening coaching check-in at 22:00 Lisbon (auto DST)
+    app.job_queue.run_daily(evening_checkin, time=dtime(hour=22, minute=0, tzinfo=ZoneInfo("Europe/Lisbon")))
 
     log.info("Bot started!")
     app.run_polling(drop_pending_updates=True)

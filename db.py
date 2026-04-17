@@ -1,17 +1,22 @@
 import aiosqlite
 from datetime import datetime, date, timezone, timedelta
+from zoneinfo import ZoneInfo
 from config import DB_PATH
 
-# Moscow timezone (UTC+3) — so "today" matches the user's actual day
-MSK = timezone(timedelta(hours=3))
+# Lisbon timezone (WET/WEST — auto DST: UTC+0 winter, UTC+1 summer)
+LOCAL_TZ = ZoneInfo("Europe/Lisbon")
 
-def today_msk() -> str:
-    """Return today's date in Moscow timezone."""
-    return datetime.now(MSK).strftime("%Y-%m-%d")
+def today_local() -> str:
+    """Return today's date in Lisbon timezone."""
+    return datetime.now(LOCAL_TZ).strftime("%Y-%m-%d")
 
-def now_msk() -> str:
-    """Return current datetime in Moscow timezone."""
-    return datetime.now(MSK).strftime("%Y-%m-%d %H:%M:%S")
+def now_local() -> str:
+    """Return current datetime in Lisbon timezone."""
+    return datetime.now(LOCAL_TZ).strftime("%Y-%m-%d %H:%M:%S")
+
+def days_ago_local(n: int) -> str:
+    """Return date N days ago in Lisbon timezone."""
+    return (datetime.now(LOCAL_TZ) - timedelta(days=n)).strftime("%Y-%m-%d")
 
 async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:
@@ -27,7 +32,7 @@ async def init_db():
                 motivation_type TEXT DEFAULT 'supportive',
                 daily_calories_target INTEGER DEFAULT 1800,
                 daily_protein_target INTEGER DEFAULT 100,
-                created_at TEXT DEFAULT (datetime('now', '+3 hours'))
+                created_at TEXT
             );
             CREATE TABLE IF NOT EXISTS meals (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -39,13 +44,13 @@ async def init_db():
                 fat REAL,
                 photo_id TEXT,
                 ai_response TEXT,
-                created_at TEXT DEFAULT (datetime('now', '+3 hours'))
+                created_at TEXT
             );
             CREATE TABLE IF NOT EXISTS weight_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER,
                 weight REAL,
-                created_at TEXT DEFAULT (datetime('now', '+3 hours'))
+                created_at TEXT
             );
             CREATE TABLE IF NOT EXISTS activity_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -53,14 +58,14 @@ async def init_db():
                 activity_type TEXT,
                 duration_min INTEGER,
                 calories_burned INTEGER,
-                created_at TEXT DEFAULT (datetime('now', '+3 hours'))
+                created_at TEXT
             );
             CREATE TABLE IF NOT EXISTS chat_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER,
                 role TEXT,
                 content TEXT,
-                created_at TEXT DEFAULT (datetime('now', '+3 hours'))
+                created_at TEXT
             );
             CREATE TABLE IF NOT EXISTS sleep_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -68,7 +73,7 @@ async def init_db():
                 hours REAL,
                 quality TEXT,
                 note TEXT,
-                created_at TEXT DEFAULT (datetime('now', '+3 hours'))
+                created_at TEXT
             );
             CREATE TABLE IF NOT EXISTS mood_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -76,7 +81,7 @@ async def init_db():
                 mood TEXT,
                 energy INTEGER,
                 note TEXT,
-                created_at TEXT DEFAULT (datetime('now', '+3 hours'))
+                created_at TEXT
             );
             CREATE TABLE IF NOT EXISTS cycle_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -84,7 +89,7 @@ async def init_db():
                 day_of_cycle INTEGER,
                 phase TEXT,
                 note TEXT,
-                created_at TEXT DEFAULT (datetime('now', '+3 hours'))
+                created_at TEXT
             );
         """)
         await db.commit()
@@ -106,6 +111,7 @@ async def upsert_user(user_id: int, **fields):
             await db.execute(f"UPDATE users SET {sets} WHERE user_id = ?", vals)
         else:
             fields["user_id"] = user_id
+            fields["created_at"] = now_local()
             cols = ", ".join(fields.keys())
             placeholders = ", ".join("?" for _ in fields)
             await db.execute(f"INSERT INTO users ({cols}) VALUES ({placeholders})", list(fields.values()))
@@ -116,16 +122,17 @@ async def add_meal(user_id: int, description: str, calories: int, protein: float
                    carbs: float, fat: float, photo_id: str = None, ai_response: str = None):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            "INSERT INTO meals (user_id, description, calories, protein, carbs, fat, photo_id, ai_response) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (user_id, description, calories, protein, carbs, fat, photo_id, ai_response)
+            "INSERT INTO meals (user_id, description, calories, protein, carbs, fat, photo_id, ai_response, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (user_id, description, calories, protein, carbs, fat, photo_id, ai_response, now_local())
         )
         await db.commit()
 
 
 async def add_weight(user_id: int, weight: float):
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("INSERT INTO weight_log (user_id, weight) VALUES (?, ?)", (user_id, weight))
+        await db.execute("INSERT INTO weight_log (user_id, weight, created_at) VALUES (?, ?, ?)",
+                         (user_id, weight, now_local()))
         await db.execute("UPDATE users SET weight_current = ? WHERE user_id = ?", (weight, user_id))
         await db.commit()
 
@@ -133,15 +140,15 @@ async def add_weight(user_id: int, weight: float):
 async def add_activity(user_id: int, activity_type: str, duration_min: int, calories_burned: int):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            "INSERT INTO activity_log (user_id, activity_type, duration_min, calories_burned) VALUES (?, ?, ?, ?)",
-            (user_id, activity_type, duration_min, calories_burned)
+            "INSERT INTO activity_log (user_id, activity_type, duration_min, calories_burned, created_at) VALUES (?, ?, ?, ?, ?)",
+            (user_id, activity_type, duration_min, calories_burned, now_local())
         )
         await db.commit()
 
 
 async def delete_last_meal(user_id: int) -> dict | None:
     """Delete the most recent meal for today and return it (or None)."""
-    today = today_msk()
+    today = today_local()
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
@@ -175,7 +182,7 @@ async def delete_meal_by_id(user_id: int, meal_id: int) -> dict | None:
 
 
 async def get_today_meals(user_id: int):
-    today = today_msk()
+    today = today_local()
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
@@ -186,7 +193,7 @@ async def get_today_meals(user_id: int):
 
 
 async def get_today_stats(user_id: int):
-    today = today_msk()
+    today = today_local()
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
             "SELECT COALESCE(SUM(calories),0), COALESCE(SUM(protein),0), "
@@ -212,26 +219,27 @@ async def get_today_stats(user_id: int):
 
 
 async def get_week_stats(user_id: int):
+    week_ago = days_ago_local(7)
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
             "SELECT date(created_at) as day, SUM(calories), SUM(protein) "
-            "FROM meals WHERE user_id = ? AND created_at >= date('now', '+3 hours', '-7 days') "
+            "FROM meals WHERE user_id = ? AND created_at >= ? "
             "GROUP BY date(created_at) ORDER BY day",
-            (user_id,)
+            (user_id, week_ago)
         ) as cur:
             meals = await cur.fetchall()
         async with db.execute(
             "SELECT date(created_at) as day, weight FROM weight_log "
-            "WHERE user_id = ? AND created_at >= date('now', '+3 hours', '-7 days') "
+            "WHERE user_id = ? AND created_at >= ? "
             "ORDER BY created_at",
-            (user_id,)
+            (user_id, week_ago)
         ) as cur:
             weights = await cur.fetchall()
         async with db.execute(
             "SELECT date(created_at) as day, SUM(calories_burned), SUM(duration_min) "
-            "FROM activity_log WHERE user_id = ? AND created_at >= date('now', '+3 hours', '-7 days') "
+            "FROM activity_log WHERE user_id = ? AND created_at >= ? "
             "GROUP BY date(created_at) ORDER BY day",
-            (user_id,)
+            (user_id, week_ago)
         ) as cur:
             activities = await cur.fetchall()
     return {
@@ -244,8 +252,8 @@ async def get_week_stats(user_id: int):
 async def add_chat_message(user_id: int, role: str, content: str):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            "INSERT INTO chat_history (user_id, role, content) VALUES (?, ?, ?)",
-            (user_id, role, content)
+            "INSERT INTO chat_history (user_id, role, content, created_at) VALUES (?, ?, ?, ?)",
+            (user_id, role, content, now_local())
         )
         await db.commit()
 
@@ -260,7 +268,7 @@ async def get_chat_history(user_id: int, limit: int = 20):
             (user_id, limit)
         ) as cur:
             rows = await cur.fetchall()
-    today = today_msk()
+    today = today_local()
     result = []
     for r in rows:
         msg_date = r[2][:10] if r[2] else ""
@@ -276,8 +284,8 @@ async def get_chat_history(user_id: int, limit: int = 20):
 async def add_sleep(user_id: int, hours: float, quality: str = None, note: str = None):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            "INSERT INTO sleep_log (user_id, hours, quality, note) VALUES (?, ?, ?, ?)",
-            (user_id, hours, quality, note)
+            "INSERT INTO sleep_log (user_id, hours, quality, note, created_at) VALUES (?, ?, ?, ?, ?)",
+            (user_id, hours, quality, note, now_local())
         )
         await db.commit()
 
@@ -285,8 +293,8 @@ async def add_sleep(user_id: int, hours: float, quality: str = None, note: str =
 async def add_mood(user_id: int, mood: str, energy: int = None, note: str = None):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            "INSERT INTO mood_log (user_id, mood, energy, note) VALUES (?, ?, ?, ?)",
-            (user_id, mood, energy, note)
+            "INSERT INTO mood_log (user_id, mood, energy, note, created_at) VALUES (?, ?, ?, ?, ?)",
+            (user_id, mood, energy, note, now_local())
         )
         await db.commit()
 
@@ -294,8 +302,8 @@ async def add_mood(user_id: int, mood: str, energy: int = None, note: str = None
 async def add_cycle(user_id: int, day_of_cycle: int, phase: str = None, note: str = None):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            "INSERT INTO cycle_log (user_id, day_of_cycle, phase, note) VALUES (?, ?, ?, ?)",
-            (user_id, day_of_cycle, phase, note)
+            "INSERT INTO cycle_log (user_id, day_of_cycle, phase, note, created_at) VALUES (?, ?, ?, ?, ?)",
+            (user_id, day_of_cycle, phase, note, now_local())
         )
         await db.commit()
 
@@ -306,6 +314,8 @@ async def build_client_context(user_id: int) -> str:
     if not user:
         return ""
 
+    days_90_ago = days_ago_local(90)
+    days_7_ago = days_ago_local(7)
     parts = []
     async with aiosqlite.connect(DB_PATH) as db:
         # Weight trend (all time)
@@ -322,12 +332,12 @@ async def build_client_context(user_id: int) -> str:
                 trend = "снижается" if recent[-1] < recent[0] else "растёт" if recent[-1] > recent[0] else "стабильный"
                 parts.append(f"Тренд веса (последние замеры): {trend}")
 
-        # Weekly food averages (last 14 days)
+        # Weekly food averages (last 90 days)
         async with db.execute(
             "SELECT date(created_at) as day, SUM(calories), SUM(protein), COUNT(*) "
-            "FROM meals WHERE user_id = ? AND created_at >= date('now', '+3 hours', '-90 days') "
+            "FROM meals WHERE user_id = ? AND created_at >= ? "
             "GROUP BY date(created_at) ORDER BY day",
-            (user_id,)
+            (user_id, days_90_ago)
         ) as cur:
             daily_food = await cur.fetchall()
         if daily_food:
@@ -339,19 +349,19 @@ async def build_client_context(user_id: int) -> str:
             # Find patterns: frequent foods
             async with db.execute(
                 "SELECT description, COUNT(*) as cnt FROM meals WHERE user_id = ? "
-                "AND created_at >= date('now', '+3 hours', '-90 days') GROUP BY description ORDER BY cnt DESC LIMIT 5",
-                (user_id,)
+                "AND created_at >= ? GROUP BY description ORDER BY cnt DESC LIMIT 5",
+                (user_id, days_90_ago)
             ) as cur:
                 top_foods = await cur.fetchall()
             if top_foods:
                 foods_str = ", ".join(f"{f[0]} ({f[1]}x)" for f in top_foods)
                 parts.append(f"Частая еда: {foods_str}")
 
-        # Activity summary (last 14 days)
+        # Activity summary (last 90 days)
         async with db.execute(
             "SELECT COUNT(*), COALESCE(SUM(duration_min),0), COALESCE(SUM(calories_burned),0) "
-            "FROM activity_log WHERE user_id = ? AND created_at >= date('now', '+3 hours', '-90 days')",
-            (user_id,)
+            "FROM activity_log WHERE user_id = ? AND created_at >= ?",
+            (user_id, days_90_ago)
         ) as cur:
             act = await cur.fetchone()
         if act[0] > 0:
@@ -360,8 +370,8 @@ async def build_client_context(user_id: int) -> str:
         # Sleep (last 7 days)
         async with db.execute(
             "SELECT hours, quality, note, date(created_at) FROM sleep_log "
-            "WHERE user_id = ? AND created_at >= date('now', '+3 hours', '-7 days') ORDER BY created_at",
-            (user_id,)
+            "WHERE user_id = ? AND created_at >= ? ORDER BY created_at",
+            (user_id, days_7_ago)
         ) as cur:
             sleeps = await cur.fetchall()
         if sleeps:
@@ -373,8 +383,8 @@ async def build_client_context(user_id: int) -> str:
         # Mood (last 7 days)
         async with db.execute(
             "SELECT mood, energy, note, date(created_at) FROM mood_log "
-            "WHERE user_id = ? AND created_at >= date('now', '+3 hours', '-7 days') ORDER BY created_at",
-            (user_id,)
+            "WHERE user_id = ? AND created_at >= ? ORDER BY created_at",
+            (user_id, days_7_ago)
         ) as cur:
             moods = await cur.fetchall()
         if moods:

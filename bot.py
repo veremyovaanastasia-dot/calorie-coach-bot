@@ -152,6 +152,70 @@ async def cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 # ── Food logging (photo) ───────────────────────────────────────────
 
+# ── Voice message handler ──────────────────────────────────────────
+
+async def handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Transcribe voice message and process as text."""
+    user = await db.get_user(update.effective_user.id)
+    if not user:
+        await update.message.reply_text(
+            "Привет! Я Олег, твой коуч. Давай познакомимся — "
+            "расскажи о себе: имя, вес, рост, возраст и цель по весу. "
+            "Можно всё сразу, можно по частям 🤙\n\n"
+            "Или нажми /start"
+        )
+        return
+
+    msg = await update.message.reply_text("Слушаю...")
+
+    try:
+        # Download voice file
+        voice = update.message.voice or update.message.audio
+        file = await ctx.bot.get_file(voice.file_id)
+        buf = io.BytesIO()
+        await file.download_to_memory(buf)
+        buf.seek(0)
+
+        # Convert OGA to WAV using pydub
+        import tempfile
+        from pydub import AudioSegment
+        import speech_recognition as sr
+
+        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp_ogg:
+            tmp_ogg.write(buf.read())
+            tmp_ogg_path = tmp_ogg.name
+
+        audio = AudioSegment.from_file(tmp_ogg_path)
+        tmp_wav_path = tmp_ogg_path.replace(".ogg", ".wav")
+        audio.export(tmp_wav_path, format="wav")
+
+        # Transcribe with Google (free, no API key)
+        recognizer = sr.Recognizer()
+        with sr.AudioFile(tmp_wav_path) as source:
+            audio_data = recognizer.record(source)
+        text = recognizer.recognize_google(audio_data, language="ru-RU")
+
+        # Clean up temp files
+        import os
+        os.unlink(tmp_ogg_path)
+        os.unlink(tmp_wav_path)
+
+    except Exception as e:
+        log.error(f"Voice transcription failed: {e}")
+        await msg.edit_text("Не удалось распознать голосовое. Попробуй написать текстом или отправить ещё раз.")
+        return
+
+    await msg.edit_text(f"🎙 \"{text}\"\n\nДумаю...")
+
+    # Process as regular text message — reuse handle_text logic
+    # Create a fake text for processing
+    update.message.text = text
+    await msg.delete()
+    await handle_text(update, ctx)
+
+
+# ── Food logging (photo) ───────────────────────────────────────────
+
 async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user = await db.get_user(update.effective_user.id)
     if not user:
@@ -681,6 +745,9 @@ def main():
 
     # Photo handler
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+
+    # Voice handler
+    app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice))
 
     # Text handler (food or coach)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))

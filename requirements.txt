@@ -3,3 +3,5 @@ anthropic>=0.42.0
 aiosqlite>=0.20.0
 python-dotenv>=1.0.0
 matplotlib>=3.9.0
+SpeechRecognition>=3.10.0
+pydub>=0.25.1

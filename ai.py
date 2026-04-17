@@ -5,7 +5,7 @@ import urllib.request
 import urllib.parse
 import anthropic
 from config import ANTHROPIC_API_KEY, CLAUDE_MODEL_SMART, CLAUDE_MODEL_FAST
-from knowledge import EXPERT_KNOWLEDGE, MONDAY_CHANNEL_KNOWLEDGE
+from knowledge import EXPERT_KNOWLEDGE, MONDAY_CHANNEL_KNOWLEDGE, PHYSICAL_NUTRITION_NORMS
 
 log = logging.getLogger(__name__)
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
@@ -109,7 +109,7 @@ SYSTEM_PERSONA = """Ты — Олег Зингилевский. Не "AI в ро
 
 # ── Knowledge (injected selectively) ─────────────────────────────────
 
-KNOWLEDGE_BLOCK = "\n\n## ЭКСПЕРТНАЯ БАЗА (используй когда релевантно, не вываливай всё сразу)\n" + EXPERT_KNOWLEDGE + MONDAY_CHANNEL_KNOWLEDGE
+KNOWLEDGE_BLOCK = "\n\n## НОРМАТИВЫ ФИЗИКЛА (используй АКТИВНО — это твоя программа, напоминай клиенту о нормах)\n" + PHYSICAL_NUTRITION_NORMS + "\n\n## ЭКСПЕРТНАЯ БАЗА (используй когда релевантно, не вываливай всё сразу)\n" + EXPERT_KNOWLEDGE + MONDAY_CHANNEL_KNOWLEDGE
 
 
 # ── Prompts ──────────────────────────────────────────────────────────

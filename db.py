@@ -196,6 +196,17 @@ async def get_today_cycle(user_id: int):
             return await cur.fetchone()
 
 
+async def get_first_weight(user_id: int) -> float | None:
+    """Get the very first recorded weight."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT weight FROM weight_log WHERE user_id = ? ORDER BY id ASC LIMIT 1",
+            (user_id,)
+        ) as cur:
+            row = await cur.fetchone()
+            return row[0] if row else None
+
+
 async def delete_last_meal(user_id: int) -> dict | None:
     """Delete the most recent meal for today and return it (or None)."""
     today = today_local()

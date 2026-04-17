@@ -316,12 +316,12 @@ async def update_pinned_summary(user_id: int, bot):
 
         # ── Weight ──
         w_cur = user.get("weight_current")
-        w_goal = user.get("weight_goal")
+        w_start = await db.get_first_weight(user_id)
         if w_cur is not None:
             w_line = f"\n⚖️ Вес: {w_cur} кг"
-            if w_goal is not None:
-                diff = w_cur - w_goal
-                w_line += f" (до цели {w_goal}: {diff:+.1f})"
+            if w_start is not None and w_start != w_cur:
+                diff = w_cur - w_start
+                w_line += f" ({diff:+.1f} с начала)"
             text += w_line + "\n"
 
         # ── Cycle ──

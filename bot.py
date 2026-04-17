@@ -637,11 +637,13 @@ async def cmd_weight(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await db.add_weight(update.effective_user.id, w)
     diff = w - user["weight_current"] if user["weight_current"] else 0
     arrow = "⬇️" if diff < 0 else "⬆️" if diff > 0 else "➡️"
-    to_goal = w - user["weight_goal"]
+    w_start = await db.get_first_weight(update.effective_user.id)
+    progress = w - w_start if w_start else 0
     await update.message.reply_text(
         f"Записано: {w} кг {arrow} ({diff:+.1f} кг)\n"
-        f"До цели ({user['weight_goal']} кг): {to_goal:.1f} кг"
+        f"С начала: {progress:+.1f} кг"
     )
+    await update_pinned_summary(update.effective_user.id, ctx.bot)
 
 
 # ── /activity ───────────────────────────────────────────────────────

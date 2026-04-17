@@ -764,26 +764,47 @@ async def cmd_goal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 # ── Scheduled reminders ────────────────────────────────────────────
 
-async def evening_reminder(ctx: ContextTypes.DEFAULT_TYPE):
-    """Check all users at 20:00 and remind if no meals today."""
+async def evening_checkin(ctx: ContextTypes.DEFAULT_TYPE):
+    """Proactive evening check-in at 22:00 MSK — ask about activity and missed meals."""
     import aiosqlite
+    import random
     from config import DB_PATH
     async with aiosqlite.connect(DB_PATH) as conn:
-        async with conn.execute("SELECT user_id, name, motivation_type FROM users") as cur:
+        async with conn.execute("SELECT user_id FROM users") as cur:
             users = await cur.fetchall()
-    for user_id, name, mtype in users:
-        stats = await db.get_today_stats(user_id)
-        if stats["meal_count"] == 0:
-            if mtype == "strict":
-                msg = f"Эй, {name}! Ни одной записи за сегодня. Что ты ела? Давай запишем."
-            elif mtype == "analytical":
-                msg = f"{name}, сегодня 0 записей. Без данных нет прогресса. Запиши хотя бы основные приёмы."
-            else:
-                msg = f"{name}, привет! Заметила что сегодня нет записей. Ничего страшного — запиши что помнишь, даже примерно."
-            try:
-                await ctx.bot.send_message(user_id, msg)
-            except Exception:
-                pass
+    for (user_id,) in users:
+        # 60% chance to send — don't nag every day
+        if random.random() > 0.6:
+            continue
+        try:
+            user = await db.get_user(user_id)
+            if not user:
+                continue
+            user = dict(user)
+            stats = await db.get_today_stats(user_id)
+            client_context = await db.build_client_context(user_id)
+            history = await db.get_chat_history(user_id)
+
+            # Build a context-aware prompt for the coach
+            prompt_parts = ["Сейчас 22:00, вечерний check-in. Напиши клиенту тёплое сообщение."]
+            if stats["meal_count"] == 0:
+                prompt_parts.append("Клиент НИЧЕГО не записал сегодня — мягко спроси, ела ли.")
+            elif stats["meal_count"] <= 2:
+                prompt_parts.append(f"Всего {stats['meal_count']} приёма пищи — спроси, не забыла ли что записать.")
+            prot_pct = stats["protein"] / user.get("daily_protein_target", 100) * 100 if user.get("daily_protein_target") else 0
+            if stats["meal_count"] > 0 and prot_pct < 50:
+                prompt_parts.append(f"Белка маловато ({stats['protein']}г из {user.get('daily_protein_target', 100)}г) — напомни.")
+            prompt_parts.append("Спроси как прошёл день, была ли активность/прогулка/тренировка.")
+            prompt_parts.append("Если есть триггеры из контекста — используй коучинговые техники.")
+            prompt_parts.append("Будь коротким (3-5 предложений), тёплым, как Олег. Не лекция, а живой вопрос.")
+
+            prompt = " ".join(prompt_parts)
+            response = await ai.coach_response(prompt, user, stats, history, client_context)
+
+            await ctx.bot.send_message(user_id, response)
+            await db.add_chat_message(user_id, "assistant", response)
+        except Exception as e:
+            log.error(f"Evening checkin failed for {user_id}: {e}")
 
 
 # ── Main ────────────────────────────────────────────────────────────
@@ -831,8 +852,8 @@ def main():
     # Text handler (food or coach)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-    # Evening reminder at 20:00
-    app.job_queue.run_daily(evening_reminder, time=dtime(hour=20, minute=0))
+    # Evening coaching check-in at 22:00 MSK (19:00 UTC)
+    app.job_queue.run_daily(evening_checkin, time=dtime(hour=19, minute=0))
 
     log.info("Bot started!")
     app.run_polling(drop_pending_updates=True)

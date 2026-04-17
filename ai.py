@@ -5,7 +5,7 @@ import urllib.request
 import urllib.parse
 import anthropic
 from config import ANTHROPIC_API_KEY, CLAUDE_MODEL_SMART, CLAUDE_MODEL_FAST
-from knowledge import EXPERT_KNOWLEDGE, MONDAY_CHANNEL_KNOWLEDGE, PHYSICAL_NUTRITION_NORMS
+from knowledge import EXPERT_KNOWLEDGE, MONDAY_CHANNEL_KNOWLEDGE, PHYSICAL_NUTRITION_NORMS, COACHING_METHODOLOGY
 
 log = logging.getLogger(__name__)
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
@@ -109,7 +109,7 @@ SYSTEM_PERSONA = """Ты — Олег Зингилевский. Не "AI в ро
 
 # ── Knowledge (injected selectively) ─────────────────────────────────
 
-KNOWLEDGE_BLOCK = "\n\n## НОРМАТИВЫ ФИЗИКЛА (используй АКТИВНО — это твоя программа, напоминай клиенту о нормах)\n" + PHYSICAL_NUTRITION_NORMS + "\n\n## ЭКСПЕРТНАЯ БАЗА (используй когда релевантно, не вываливай всё сразу)\n" + EXPERT_KNOWLEDGE + MONDAY_CHANNEL_KNOWLEDGE
+KNOWLEDGE_BLOCK = "\n\n## НОРМАТИВЫ ФИЗИКЛА (используй АКТИВНО — это твоя программа, напоминай клиенту о нормах)\n" + PHYSICAL_NUTRITION_NORMS + "\n\n## КОУЧИНГ ПО ЗАВИСИМОСТИ ОТ СЛАДКОГО И РПП (применяй АКТИВНО — это твоя методология)\n" + COACHING_METHODOLOGY + "\n\n## ЭКСПЕРТНАЯ БАЗА (используй когда релевантно, не вываливай всё сразу)\n" + EXPERT_KNOWLEDGE + MONDAY_CHANNEL_KNOWLEDGE
 
 
 # ── Prompts ──────────────────────────────────────────────────────────
@@ -158,6 +158,52 @@ async def classify_message(text: str) -> str:
     return "chat"
 
 
+# ── Coaching trigger detection ────────────────────────────────────────
+
+def _detect_coaching_triggers(client_context: str, today_stats: dict, user: dict) -> str:
+    """Analyze client data and return coaching hints for the AI."""
+    if not client_context:
+        return ""
+    hints = []
+    ctx_lower = client_context.lower()
+
+    # Sweet/sugar in top foods
+    sweet_words = ["шоколад", "конфет", "печень", "торт", "пирож", "сладк", "десерт", "мороженое", "булк", "вафл"]
+    if any(w in ctx_lower for w in sweet_words):
+        hints.append("ПАТТЕРН: сладкое в частой еде → поговори про зависимость, используй urge surfing / cognitive defusion")
+
+    # Bad mood
+    if any(w in ctx_lower for w in ["плохое", "грустн", "стресс", "тревог", "устал", "апати", "раздраж"]):
+        hints.append("ПАТТЕРН: плохое настроение → спроси про эмоциональное переедание, предложи HALT check")
+
+    # Poor sleep
+    if "сон" in ctx_lower or "спал" in ctx_lower:
+        import re
+        sleep_match = re.search(r'(\d+[.,]?\d*)\s*ч', ctx_lower)
+        if sleep_match:
+            hours = float(sleep_match.group(1).replace(",", "."))
+            if hours < 6:
+                hints.append(f"ПАТТЕРН: сон {hours}ч (мало!) → недосып = +28% тяга к сладкому (грелин↑, лептин↓)")
+
+    # Luteal phase
+    if "лютеиновая" in ctx_lower:
+        hints.append("ПАТТЕРН: лютеиновая фаза → прогестерон↓ серотонин↓ → мозг просит сахар. Это НОРМАЛЬНО, предупреди клиента")
+
+    # Low protein
+    prot_target = user.get("daily_protein_target", 100)
+    prot_eaten = today_stats.get("protein", 0)
+    if today_stats.get("meal_count", 0) >= 2 and prot_eaten < prot_target * 0.4:
+        hints.append(f"ПАТТЕРН: мало белка ({prot_eaten}г из {prot_target}г) → мало сытости = импульсивные перекусы. Напомни добавить белок")
+
+    # Skipped meals (it's afternoon/evening but 0 meals)
+    if today_stats.get("meal_count", 0) == 0:
+        hints.append("ПАТТЕРН: 0 приёмов пищи сегодня → пропуск еды = голод = срыв вечером. Спроси ела ли")
+
+    if not hints:
+        return ""
+    return "\n\n## КОУЧИНГОВЫЕ ТРИГГЕРЫ (действуй!)\n" + "\n".join(f"⚠️ {h}" for h in hints)
+
+
 # ── System prompt builders ───────────────────────────────────────────
 
 def _build_coach_system(user: dict, today_stats: dict, client_context: str = "") -> list:
@@ -193,9 +239,37 @@ def _build_coach_system(user: dict, today_stats: dict, client_context: str = "")
 - В истории чата могут быть сообщения за прошлые дни (помечены датой [ГГГГ-ММ-ДД]). Это СТАРЫЕ данные — НЕ суммируй их с сегодняшними.
 - Каждый день подсчёт калорий начинается с нуля. Вчерашние калории НЕ переносятся на сегодня.
 - Если спрашивают "сколько я съела сегодня" — бери цифру ТОЛЬКО из "ДАННЫЕ КЛИЕНТА" ("Сегодня съедено").
+
+## КОУЧИНГ ПО ЗАВИСИМОСТИ ОТ СЛАДКОГО И ПЕРЕЕДАНИЮ
+Ты — не просто трекер. Ты активный коуч по работе с пищевым поведением.
+
+КОГДА КЛИЕНТ ПИШЕТ "хочу сладкое / тянет / крэйвинг":
+→ Используй URGE SURFING из методологии. НЕ говори "просто не ешь" или "замени на фрукты".
+→ Задай HALT check: голод? злость? одиночество? усталость?
+→ Спроси по шкале голода 1-10.
+
+КОГДА "переела / срыв / объелась":
+→ НЕ РУГАЙ. Проведи CHAIN ANALYSIS из методологии.
+→ "Срыв — это данные, не провал."
+→ Когнитивная реструктуризация если клиент себя ругает.
+
+КОГДА настроение плохое / стресс:
+→ Спроси про связь эмоций и еды. "Когда тебе грустно — тянет перекусить?"
+→ Предложи альтернативу: прогулка, дыхание, написать мне.
+
+БУДЬ ПРОАКТИВНЫМ КОУЧЕМ:
+→ Сам задавай вопросы: "Как вечер? Не тянуло на сладкое?"
+→ Используй MI/OARS: открытые вопросы, рефлексию, аффирмации.
+→ Замечай паттерны из контекста клиента и озвучивай их.
+→ Не читай лекции — задавай вопросы, которые ведут к инсайтам.
 """
     if client_context:
         dynamic += client_context
+
+    # Inject coaching triggers based on client data
+    coaching_hints = _detect_coaching_triggers(client_context, today_stats, user)
+    if coaching_hints:
+        dynamic += coaching_hints
 
     return [
         {"type": "text", "text": static, "cache_control": {"type": "ephemeral"}},

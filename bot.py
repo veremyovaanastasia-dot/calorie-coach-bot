@@ -333,45 +333,44 @@ async def update_pinned_summary(user_id: int, bot):
         if meals:
             text += f"\n🍽 Что я ела:\n"
             for i, m in enumerate(meals, 1):
-                text += f"{i}. {m['description']} — {m['calories']} ккал"
-                text += f" (Б{m['protein']:.0f} У{m['carbs']:.0f} Ж{m['fat']:.0f})\n"
+                text += f"{i}. {m['description']} — {m['calories']}\n"
 
         # ── Totals ──
-        text += f"\nИтого: {cal_eaten} / {cal_target} ккал"
-        if remaining > 0:
-            text += f" (осталось {remaining})"
-        elif remaining < 0:
-            text += f" (перебор {-remaining})"
-        text += f" | Б: {stats['protein']:.0f}/{prot_target}г"
-
-        # Protein check
+        text += f"\nИтого: {cal_eaten} ккал | Б: {stats['protein']:.0f}г"
         if stats['protein'] >= prot_target:
             text += " ✅"
         text += "\n"
-        text += f"У: {stats['carbs']:.0f}г | Ж: {stats['fat']:.0f}г\n"
 
         # ── Activity ──
         if activities:
             total_burned = sum(a['calories_burned'] for a in activities)
-            text += f"\n🏋️ Активность (-{total_burned} ккал):\n"
+            text += f"\n🏋️ Активность:\n"
             for a in activities:
-                text += f"  ✅ {a['activity_type']} — {a['duration_min']}мин ({a['calories_burned']} ккал)\n"
+                dur = a['duration_min']
+                if dur >= 60:
+                    h = dur // 60
+                    m = dur % 60
+                    dur_str = f"{h} час" + (f" {m} мин" if m else "")
+                else:
+                    dur_str = f"{dur} мин"
+                text += f"✅ {a['activity_type']} — {dur_str}\n"
+            text += f"Расход: ~{total_burned} ккал\n"
 
-        # ── Sleep / Mood ──
-        extras = []
-        if sleep:
-            extras.append(f"😴 Сон: {sleep['hours']}ч" + (f" ({sleep['quality']})" if sleep['quality'] else ""))
+        # ── Trackers ──
+        text += f"\n🥛 Белок: {stats['protein']:.0f}/{prot_target}г"
+        if stats['protein'] >= prot_target:
+            text += " ✅"
+        text += "\n"
+
+        # ── Evening check-in ──
+        checkin_parts = []
         if mood:
-            extras.append(f"💛 Настроение: {mood['mood']}")
-        if extras:
-            text += "\n" + "\n".join(extras) + "\n"
-
-        # ── Progress bar ──
-        cal_pct = min(cal_eaten / cal_target, 1.5) if cal_target else 0
-        bar_len = 15
-        filled = int(min(cal_pct, 1.0) * bar_len)
-        bar = "█" * filled + "░" * (bar_len - filled)
-        text += f"\n[{bar}] {cal_pct*100:.0f}%"
+            checkin_parts.append(f"💛 Настроение: {mood['mood']}")
+        if sleep:
+            checkin_parts.append(f"😴 Сон: {sleep['hours']}ч" + (f" ({sleep['quality']})" if sleep['quality'] else ""))
+        if checkin_parts:
+            text += f"\n🌙 Вечерний чекин:\n"
+            text += "\n".join(checkin_parts) + "\n"
 
         if not meals and not activities:
             text = f"📌 СЕГОДНЯ — {date_str}\n\nПока пусто — записывай еду и активность!"

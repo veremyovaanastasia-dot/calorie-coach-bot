@@ -321,12 +321,24 @@ async def update_pinned_summary(user_id: int, bot):
     pinned_date = user.get("pinned_date")
 
     if pinned_id and pinned_date == today:
-        # Try to edit existing
+        # Try to edit existing pinned message
         try:
-            await bot.edit_message_text(text, chat_id=user_id, message_id=pinned_id)
-            return
+            await bot.edit_message_text(text, chat_id=user_id, message_id=int(pinned_id))
+            return  # success — done
+        except Exception as e:
+            log.warning(f"Edit pinned failed for {user_id} (msg {pinned_id}): {e}")
+            # Try to delete old message before creating new
+            try:
+                await bot.delete_message(chat_id=user_id, message_id=int(pinned_id))
+            except Exception:
+                pass
+
+    # Unpin old message if it's from a different day
+    if pinned_id and pinned_date != today:
+        try:
+            await bot.unpin_chat_message(chat_id=user_id, message_id=int(pinned_id))
         except Exception:
-            pass  # message deleted or can't edit — create new
+            pass
 
     # Send new message and pin it
     try:

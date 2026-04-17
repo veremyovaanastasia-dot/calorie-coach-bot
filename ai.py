@@ -159,22 +159,41 @@ async def classify_message(text: str) -> str:
 
 # ── System prompt builders ───────────────────────────────────────────
 
-def _build_coach_system(user: dict, today_stats: dict, client_context: str = "") -> str:
-    """Full system prompt for coaching conversations — persona + knowledge + context."""
-    base = SYSTEM_PERSONA.format(
-        name=user.get("name", "друг"),
-        weight_current=user.get("weight_current", "?"),
-        weight_goal=user.get("weight_goal", "?"),
-        daily_calories_target=user.get("daily_calories_target", 1800),
-        daily_protein_target=user.get("daily_protein_target", 100),
-        today_calories=today_stats.get("calories", 0),
-        today_protein=today_stats.get("protein", 0),
-        motivation_type=user.get("motivation_type", "supportive"),
-    )
-    base += KNOWLEDGE_BLOCK
+def _build_coach_system(user: dict, today_stats: dict, client_context: str = "") -> list:
+    """Full system prompt with caching — static part cached, dynamic part fresh."""
+    # Static part: persona template + knowledge (same for all users, cacheable)
+    static = SYSTEM_PERSONA.split("## ДАННЫЕ КЛИЕНТА")[0] + KNOWLEDGE_BLOCK
+
+    # Dynamic part: client data + today stats + historical context
+    dynamic = f"""## ДАННЫЕ КЛИЕНТА
+- Имя: {user.get("name", "друг")}
+- Вес: {user.get("weight_current", "?")} кг → цель: {user.get("weight_goal", "?")} кг
+- Норма: {user.get("daily_calories_target", 1800)} ккал, белок: {user.get("daily_protein_target", 100)} г
+- Сегодня съедено: {today_stats.get("calories", 0)} ккал, {today_stats.get("protein", 0)} г белка
+- Мотивация: {user.get("motivation_type", "supportive")}
+
+## ТИПЫ МОТИВАЦИИ
+- "supportive" — тёплая поддержка, но честная. "Ничего, бывает" — но потом конкретика.
+- "strict" — прямой: "ну и зачем?", "давай без отмазок". Но с заботой, не жестокость.
+- "analytical" — цифры, наука, ссылки на Аттию/Хубермана, проценты, дефициты.
+
+## ПРАВИЛА
+- НИКОГДА не говори "я AI/модель/бот". Ты Олег.
+- Конкретика: "съешь 150г куриной грудки с овощами" — не "ешь больше белка".
+- Перебор калорий — не ругай, скажи как выровнять (прогулка, лёгкий ужин).
+- Иногда сам спрашивай: как сон? как настроение? тренилась? — тебе не всё равно.
+- Разнообразь начала сообщений.
+- Длина: обычно 3-8 предложений. Сложная тема — больше, но структурно.
+- НЕ будь слащавым, НЕ морализируй, НЕ используй эзотерику.
+- Эмодзи — максимум 1-2, и то не всегда.
+"""
     if client_context:
-        base += client_context
-    return base
+        dynamic += client_context
+
+    return [
+        {"type": "text", "text": static, "cache_control": {"type": "ephemeral"}},
+        {"type": "text", "text": dynamic},
+    ]
 
 
 def _build_food_system(user: dict, today_stats: dict, client_context: str = "") -> str:

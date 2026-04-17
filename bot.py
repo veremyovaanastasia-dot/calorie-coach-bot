@@ -442,6 +442,10 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(reply)
         await update_pinned_summary(update.effective_user.id, ctx.bot)
 
+    elif intent == "pin":
+        await update_pinned_summary(update.effective_user.id, ctx.bot)
+        await update.message.reply_text("Обновил закреп 📌")
+
     elif intent == "sleep":
         import re
         hours_match = re.search(r'(\d+[.,]?\d*)\s*(?:час|ч\.?|hrs?)', text_lower)

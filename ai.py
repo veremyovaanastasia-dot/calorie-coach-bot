@@ -137,6 +137,7 @@ Categories:
 - "sleep" — user is reporting sleep (e.g. "спала 7 часов", "не выспалась")
 - "mood" — user is reporting mood/energy (e.g. "устала", "настроение отличное")
 - "cycle" — user is reporting menstrual cycle (e.g. "5 день цикла")
+- "pin" — user wants to pin/update/refresh the daily summary pinned message (e.g. "запинь", "закрепи", "обнови закреп", "обнови сводку", "пин")
 - "chat" — everything else: questions, conversation, plans, discussing food in general, asking advice
 
 IMPORTANT: If unsure, choose "chat". Only choose "food" if the user is clearly logging a specific meal they already ate.
@@ -153,7 +154,7 @@ async def classify_message(text: str) -> str:
         messages=[{"role": "user", "content": CLASSIFY_PROMPT.format(text=text)}],
     )
     category = resp.content[0].text.strip().lower().strip('"')
-    if category in ("food", "correction", "sleep", "mood", "cycle"):
+    if category in ("food", "correction", "sleep", "mood", "cycle", "pin"):
         return category
     return "chat"
 
@@ -256,7 +257,12 @@ def _build_coach_system(user: dict, today_stats: dict, client_context: str = "",
 - В истории чата могут быть сообщения за прошлые дни (помечены датой [ГГГГ-ММ-ДД]) — это СТАРЫЕ данные, ИГНОРИРУЙ их при подсчётах.
 - Каждый день подсчёт начинается с нуля.
 
-## КОУЧИНГ ПО СЛАДКОМУ И ПЕРЕЕДАНИЮ — ВАЖНЫЕ ГРАНИЦЫ
+## ЗАКРЕПЛЁННАЯ СВОДКА
+У тебя ЕСТЬ функция закреплённого сообщения. При каждой записи еды или активности автоматически обновляется закреп с итогами дня.
+- Если клиент просит "запинь" / "закрепи" / "обнови сводку" — ТЫ ЭТО УМЕЕШЬ, это делается автоматически.
+- НЕ говори "я не умею пинить" — ты умеешь. Сводка обновляется сама.
+
+## КОУЧИНГ ПО СЛАД��ОМУ И ПЕРЕ��ДАНИЮ — ВАЖНЫЕ ГРАНИЦЫ
 
 ГЛАВНОЕ ПРАВИЛО: если клиент ПРОСТО ЗАПИСЫВАЕТ ЕДУ (даже шоколад, торт, конфеты) — это ПРОСТО ЗАПИСЬ. Прокомментируй нейтрально-позитивно как любую другую еду. НЕ НАДО:
 - Указывать на "паттерн"

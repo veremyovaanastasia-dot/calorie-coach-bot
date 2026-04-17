@@ -133,6 +133,7 @@ CLASSIFY_PROMPT = """Classify this message into ONE category. Reply with ONLY th
 
 Categories:
 - "food" — user is REPORTING what they ate/drank RIGHT NOW (e.g. "съела салат", "на обед была гречка с курицей", "выпила кофе с молоком"). Must be a concrete meal report, not just mentioning food in conversation.
+- "correction" — user is CORRECTING a previous food entry (e.g. "нет, не яичница, а салат", "это было неправильно, я ела...", "ты перепутал, у меня было...", "не X а Y"). They mention wrong food AND correct food.
 - "sleep" — user is reporting sleep (e.g. "спала 7 часов", "не выспалась")
 - "mood" — user is reporting mood/energy (e.g. "устала", "настроение отличное")
 - "cycle" — user is reporting menstrual cycle (e.g. "5 день цикла")
@@ -152,7 +153,7 @@ async def classify_message(text: str) -> str:
         messages=[{"role": "user", "content": CLASSIFY_PROMPT.format(text=text)}],
     )
     category = resp.content[0].text.strip().lower().strip('"')
-    if category in ("food", "sleep", "mood", "cycle"):
+    if category in ("food", "correction", "sleep", "mood", "cycle"):
         return category
     return "chat"
 

@@ -298,8 +298,9 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # Let AI classify the message instead of dumb keyword matching
     intent = await ai.classify_message(text)
 
-    if intent == "food":
-        msg = await update.message.reply_text("Записываю...")
+    if intent in ("food", "correction"):
+        is_correction = intent == "correction"
+        msg = await update.message.reply_text("Исправляю..." if is_correction else "Записываю...")
         result = await ai.analyze_food_text(text, dict(user), today_stats, client_context)
 
         if "error" in result:
@@ -310,6 +311,11 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await db.add_chat_message(update.effective_user.id, "assistant", response)
             await msg.edit_text(response)
             return
+
+        # If correction — delete the last meal first
+        deleted = None
+        if is_correction:
+            deleted = await db.delete_last_meal(update.effective_user.id)
 
         await db.add_meal(
             update.effective_user.id,
@@ -323,7 +329,12 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         today_stats = await db.get_today_stats(update.effective_user.id)
         remaining = user["daily_calories_target"] - today_stats["calories"]
 
+        correction_note = ""
+        if deleted:
+            correction_note = f"🔄 Заменено: {deleted['description']} → {result.get('dish', text)}\n"
+
         nutrition = (
+            correction_note +
             f"📝 {result.get('dish', text)} — {result['calories']} ккал\n"
             f"Б {result['protein']}г | У {result['carbs']}г | Ж {result['fat']}г\n"
             f"Итого за день: {today_stats['calories']}/{user['daily_calories_target']} ккал | осталось {remaining}\n\n"
@@ -377,6 +388,71 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         response = await ai.coach_response(text, dict(user), today_stats, history, client_context)
         await db.add_chat_message(update.effective_user.id, "assistant", response)
         await update.message.reply_text(response)
+
+
+# ── /undo — delete last meal ───────────────────────────────────────
+
+async def cmd_undo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    user = await db.get_user(update.effective_user.id)
+    if not user:
+        await update.message.reply_text("Давай сначала познакомимся! Нажми /start")
+        return
+    meal = await db.delete_last_meal(update.effective_user.id)
+    if not meal:
+        await update.message.reply_text("Нечего удалять — за сегодня нет записей.")
+        return
+    stats = await db.get_today_stats(update.effective_user.id)
+    await update.message.reply_text(
+        f"Удалено: {meal['description']} ({meal['calories']} ккал)\n\n"
+        f"Итого за день: {stats['calories']}/{user['daily_calories_target']} ккал"
+    )
+
+
+# ── /meals — list today's meals ───────────────────────────────────
+
+async def cmd_meals(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    user = await db.get_user(update.effective_user.id)
+    if not user:
+        await update.message.reply_text("Давай сначала познакомимся! Нажми /start")
+        return
+    meals = await db.get_today_meals(update.effective_user.id)
+    if not meals:
+        await update.message.reply_text("Сегодня пока ничего не записано.")
+        return
+    lines = []
+    total_cal = 0
+    for m in meals:
+        lines.append(f"{m['id']}. {m['description']} — {m['calories']} ккал (Б{m['protein']}г)")
+        total_cal += m['calories']
+    lines.append(f"\nИтого: {total_cal}/{user['daily_calories_target']} ккал")
+    lines.append("\nУдалить запись: /delete <номер>")
+    await update.message.reply_text("\n".join(lines))
+
+
+# ── /delete <id> — delete specific meal ───────────────────────────
+
+async def cmd_delete(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    user = await db.get_user(update.effective_user.id)
+    if not user:
+        await update.message.reply_text("Давай сначала познакомимся! Нажми /start")
+        return
+    if not ctx.args:
+        await update.message.reply_text("Укажи номер записи: /delete 5\nПосмотреть записи: /meals")
+        return
+    try:
+        meal_id = int(ctx.args[0])
+    except ValueError:
+        await update.message.reply_text("Укажи номер: /delete 5")
+        return
+    meal = await db.delete_meal_by_id(update.effective_user.id, meal_id)
+    if not meal:
+        await update.message.reply_text("Запись не найдена. Посмотри список: /meals")
+        return
+    stats = await db.get_today_stats(update.effective_user.id)
+    await update.message.reply_text(
+        f"Удалено: {meal['description']} ({meal['calories']} ккал)\n\n"
+        f"Итого за день: {stats['calories']}/{user['daily_calories_target']} ккал"
+    )
 
 
 # ── /weight ─────────────────────────────────────────────────────────
@@ -742,6 +818,9 @@ def main():
     app.add_handler(CommandHandler("sleep", cmd_sleep))
     app.add_handler(CommandHandler("mood", cmd_mood))
     app.add_handler(CommandHandler("cycle", cmd_cycle))
+    app.add_handler(CommandHandler("undo", cmd_undo))
+    app.add_handler(CommandHandler("meals", cmd_meals))
+    app.add_handler(CommandHandler("delete", cmd_delete))
 
     # Photo handler
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))

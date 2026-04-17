@@ -139,6 +139,41 @@ async def add_activity(user_id: int, activity_type: str, duration_min: int, calo
         await db.commit()
 
 
+async def delete_last_meal(user_id: int) -> dict | None:
+    """Delete the most recent meal for today and return it (or None)."""
+    today = today_msk()
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM meals WHERE user_id = ? AND date(created_at) = ? ORDER BY id DESC LIMIT 1",
+            (user_id, today)
+        ) as cur:
+            row = await cur.fetchone()
+        if not row:
+            return None
+        meal = dict(row)
+        await db.execute("DELETE FROM meals WHERE id = ?", (meal["id"],))
+        await db.commit()
+        return meal
+
+
+async def delete_meal_by_id(user_id: int, meal_id: int) -> dict | None:
+    """Delete a specific meal by ID (only if it belongs to this user)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM meals WHERE id = ? AND user_id = ?",
+            (meal_id, user_id)
+        ) as cur:
+            row = await cur.fetchone()
+        if not row:
+            return None
+        meal = dict(row)
+        await db.execute("DELETE FROM meals WHERE id = ?", (meal_id,))
+        await db.commit()
+        return meal
+
+
 async def get_today_meals(user_id: int):
     today = today_msk()
     async with aiosqlite.connect(DB_PATH) as db:

@@ -163,6 +163,39 @@ async def get_today_activities(user_id: int):
             return await cur.fetchall()
 
 
+async def get_today_sleep(user_id: int):
+    today = today_local()
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM sleep_log WHERE user_id = ? AND date(created_at) = ? ORDER BY id DESC LIMIT 1",
+            (user_id, today)
+        ) as cur:
+            return await cur.fetchone()
+
+
+async def get_today_mood(user_id: int):
+    today = today_local()
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM mood_log WHERE user_id = ? AND date(created_at) = ? ORDER BY id DESC LIMIT 1",
+            (user_id, today)
+        ) as cur:
+            return await cur.fetchone()
+
+
+async def get_today_cycle(user_id: int):
+    """Get latest cycle entry (today or most recent)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM cycle_log WHERE user_id = ? ORDER BY id DESC LIMIT 1",
+            (user_id,)
+        ) as cur:
+            return await cur.fetchone()
+
+
 async def delete_last_meal(user_id: int) -> dict | None:
     """Delete the most recent meal for today and return it (or None)."""
     today = today_local()

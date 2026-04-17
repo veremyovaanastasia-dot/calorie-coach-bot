@@ -1,6 +1,17 @@
 import aiosqlite
-from datetime import datetime, date
+from datetime import datetime, date, timezone, timedelta
 from config import DB_PATH
+
+# Moscow timezone (UTC+3) — so "today" matches the user's actual day
+MSK = timezone(timedelta(hours=3))
+
+def today_msk() -> str:
+    """Return today's date in Moscow timezone."""
+    return datetime.now(MSK).strftime("%Y-%m-%d")
+
+def now_msk() -> str:
+    """Return current datetime in Moscow timezone."""
+    return datetime.now(MSK).strftime("%Y-%m-%d %H:%M:%S")
 
 async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:
@@ -16,7 +27,7 @@ async def init_db():
                 motivation_type TEXT DEFAULT 'supportive',
                 daily_calories_target INTEGER DEFAULT 1800,
                 daily_protein_target INTEGER DEFAULT 100,
-                created_at TEXT DEFAULT (datetime('now'))
+                created_at TEXT DEFAULT (datetime('now', '+3 hours'))
             );
             CREATE TABLE IF NOT EXISTS meals (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -28,13 +39,13 @@ async def init_db():
                 fat REAL,
                 photo_id TEXT,
                 ai_response TEXT,
-                created_at TEXT DEFAULT (datetime('now'))
+                created_at TEXT DEFAULT (datetime('now', '+3 hours'))
             );
             CREATE TABLE IF NOT EXISTS weight_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER,
                 weight REAL,
-                created_at TEXT DEFAULT (datetime('now'))
+                created_at TEXT DEFAULT (datetime('now', '+3 hours'))
             );
             CREATE TABLE IF NOT EXISTS activity_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -42,14 +53,14 @@ async def init_db():
                 activity_type TEXT,
                 duration_min INTEGER,
                 calories_burned INTEGER,
-                created_at TEXT DEFAULT (datetime('now'))
+                created_at TEXT DEFAULT (datetime('now', '+3 hours'))
             );
             CREATE TABLE IF NOT EXISTS chat_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER,
                 role TEXT,
                 content TEXT,
-                created_at TEXT DEFAULT (datetime('now'))
+                created_at TEXT DEFAULT (datetime('now', '+3 hours'))
             );
             CREATE TABLE IF NOT EXISTS sleep_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -57,7 +68,7 @@ async def init_db():
                 hours REAL,
                 quality TEXT,
                 note TEXT,
-                created_at TEXT DEFAULT (datetime('now'))
+                created_at TEXT DEFAULT (datetime('now', '+3 hours'))
             );
             CREATE TABLE IF NOT EXISTS mood_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -65,7 +76,7 @@ async def init_db():
                 mood TEXT,
                 energy INTEGER,
                 note TEXT,
-                created_at TEXT DEFAULT (datetime('now'))
+                created_at TEXT DEFAULT (datetime('now', '+3 hours'))
             );
             CREATE TABLE IF NOT EXISTS cycle_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -73,7 +84,7 @@ async def init_db():
                 day_of_cycle INTEGER,
                 phase TEXT,
                 note TEXT,
-                created_at TEXT DEFAULT (datetime('now'))
+                created_at TEXT DEFAULT (datetime('now', '+3 hours'))
             );
         """)
         await db.commit()
@@ -129,7 +140,7 @@ async def add_activity(user_id: int, activity_type: str, duration_min: int, calo
 
 
 async def get_today_meals(user_id: int):
-    today = date.today().isoformat()
+    today = today_msk()
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
@@ -140,7 +151,7 @@ async def get_today_meals(user_id: int):
 
 
 async def get_today_stats(user_id: int):
-    today = date.today().isoformat()
+    today = today_msk()
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
             "SELECT COALESCE(SUM(calories),0), COALESCE(SUM(protein),0), "
@@ -169,21 +180,21 @@ async def get_week_stats(user_id: int):
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
             "SELECT date(created_at) as day, SUM(calories), SUM(protein) "
-            "FROM meals WHERE user_id = ? AND created_at >= date('now', '-7 days') "
+            "FROM meals WHERE user_id = ? AND created_at >= date('now', '+3 hours', '-7 days') "
             "GROUP BY date(created_at) ORDER BY day",
             (user_id,)
         ) as cur:
             meals = await cur.fetchall()
         async with db.execute(
             "SELECT date(created_at) as day, weight FROM weight_log "
-            "WHERE user_id = ? AND created_at >= date('now', '-7 days') "
+            "WHERE user_id = ? AND created_at >= date('now', '+3 hours', '-7 days') "
             "ORDER BY created_at",
             (user_id,)
         ) as cur:
             weights = await cur.fetchall()
         async with db.execute(
             "SELECT date(created_at) as day, SUM(calories_burned), SUM(duration_min) "
-            "FROM activity_log WHERE user_id = ? AND created_at >= date('now', '-7 days') "
+            "FROM activity_log WHERE user_id = ? AND created_at >= date('now', '+3 hours', '-7 days') "
             "GROUP BY date(created_at) ORDER BY day",
             (user_id,)
         ) as cur:
@@ -269,7 +280,7 @@ async def build_client_context(user_id: int) -> str:
         # Weekly food averages (last 14 days)
         async with db.execute(
             "SELECT date(created_at) as day, SUM(calories), SUM(protein), COUNT(*) "
-            "FROM meals WHERE user_id = ? AND created_at >= date('now', '-90 days') "
+            "FROM meals WHERE user_id = ? AND created_at >= date('now', '+3 hours', '-90 days') "
             "GROUP BY date(created_at) ORDER BY day",
             (user_id,)
         ) as cur:
@@ -283,7 +294,7 @@ async def build_client_context(user_id: int) -> str:
             # Find patterns: frequent foods
             async with db.execute(
                 "SELECT description, COUNT(*) as cnt FROM meals WHERE user_id = ? "
-                "AND created_at >= date('now', '-90 days') GROUP BY description ORDER BY cnt DESC LIMIT 5",
+                "AND created_at >= date('now', '+3 hours', '-90 days') GROUP BY description ORDER BY cnt DESC LIMIT 5",
                 (user_id,)
             ) as cur:
                 top_foods = await cur.fetchall()
@@ -294,7 +305,7 @@ async def build_client_context(user_id: int) -> str:
         # Activity summary (last 14 days)
         async with db.execute(
             "SELECT COUNT(*), COALESCE(SUM(duration_min),0), COALESCE(SUM(calories_burned),0) "
-            "FROM activity_log WHERE user_id = ? AND created_at >= date('now', '-90 days')",
+            "FROM activity_log WHERE user_id = ? AND created_at >= date('now', '+3 hours', '-90 days')",
             (user_id,)
         ) as cur:
             act = await cur.fetchone()
@@ -304,7 +315,7 @@ async def build_client_context(user_id: int) -> str:
         # Sleep (last 7 days)
         async with db.execute(
             "SELECT hours, quality, note, date(created_at) FROM sleep_log "
-            "WHERE user_id = ? AND created_at >= date('now', '-7 days') ORDER BY created_at",
+            "WHERE user_id = ? AND created_at >= date('now', '+3 hours', '-7 days') ORDER BY created_at",
             (user_id,)
         ) as cur:
             sleeps = await cur.fetchall()
@@ -317,7 +328,7 @@ async def build_client_context(user_id: int) -> str:
         # Mood (last 7 days)
         async with db.execute(
             "SELECT mood, energy, note, date(created_at) FROM mood_log "
-            "WHERE user_id = ? AND created_at >= date('now', '-7 days') ORDER BY created_at",
+            "WHERE user_id = ? AND created_at >= date('now', '+3 hours', '-7 days') ORDER BY created_at",
             (user_id,)
         ) as cur:
             moods = await cur.fetchall()

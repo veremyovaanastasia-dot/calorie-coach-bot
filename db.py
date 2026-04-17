@@ -92,6 +92,12 @@ async def init_db():
                 created_at TEXT
             );
         """)
+        # Migration: add pinned_message_id column if missing
+        try:
+            await db.execute("ALTER TABLE users ADD COLUMN pinned_message_id INTEGER")
+            await db.execute("ALTER TABLE users ADD COLUMN pinned_date TEXT")
+        except Exception:
+            pass  # columns already exist
         await db.commit()
 
 
@@ -144,6 +150,17 @@ async def add_activity(user_id: int, activity_type: str, duration_min: int, calo
             (user_id, activity_type, duration_min, calories_burned, now_local())
         )
         await db.commit()
+
+
+async def get_today_activities(user_id: int):
+    today = today_local()
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM activity_log WHERE user_id = ? AND date(created_at) = ?",
+            (user_id, today)
+        ) as cur:
+            return await cur.fetchall()
 
 
 async def delete_last_meal(user_id: int) -> dict | None:

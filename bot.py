@@ -275,6 +275,66 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await db.add_chat_message(update.effective_user.id, "assistant", full_text)
 
     await msg.edit_text(full_text)
+    await update_pinned_summary(update.effective_user.id, ctx.bot)
+
+
+MONTHS_RU = ["января", "февраля", "марта", "апреля", "мая", "июня",
+             "июля", "августа", "сентября", "октября", "ноября", "декабря"]
+
+
+async def update_pinned_summary(user_id: int, bot):
+    """Create or update a pinned message with today's food & activity summary."""
+    user = await db.get_user(user_id)
+    if not user:
+        return
+    user = dict(user)
+    stats = await db.get_today_stats(user_id)
+    meals = await db.get_today_meals(user_id)
+    activities = await db.get_today_activities(user_id)
+    today = db.today_local()
+
+    # Format date nicely
+    from datetime import datetime as _dt
+    d = _dt.strptime(today, "%Y-%m-%d")
+    date_str = f"{d.day} {MONTHS_RU[d.month - 1]}"
+
+    remaining = user["daily_calories_target"] - stats["calories"] + stats["calories_burned"]
+    text = f"📊 Сегодня, {date_str}\n\n"
+    text += f"🔥 {stats['calories']} / {user['daily_calories_target']} ккал (осталось {remaining})\n"
+    text += f"🥩 Белок: {stats['protein']:.0f} / {user['daily_protein_target']}г\n"
+
+    if meals:
+        text += "\n🍽 Еда:\n"
+        for m in meals:
+            text += f"• {m['description']} — {m['calories']} ккал\n"
+
+    if activities:
+        text += "\n🏃 Активность:\n"
+        for a in activities:
+            text += f"• {a['activity_type']} {a['duration_min']}мин (-{a['calories_burned']} ккал)\n"
+
+    if not meals and not activities:
+        text += "\nПока пусто — записывай еду и активность!"
+
+    # Check if we already have a pinned message for today
+    pinned_id = user.get("pinned_message_id")
+    pinned_date = user.get("pinned_date")
+
+    if pinned_id and pinned_date == today:
+        # Try to edit existing
+        try:
+            await bot.edit_message_text(text, chat_id=user_id, message_id=pinned_id)
+            return
+        except Exception:
+            pass  # message deleted or can't edit — create new
+
+    # Send new message and pin it
+    try:
+        msg = await bot.send_message(user_id, text)
+        await bot.pin_chat_message(chat_id=user_id, message_id=msg.message_id, disable_notification=True)
+        await db.upsert_user(user_id, pinned_message_id=msg.message_id, pinned_date=today)
+    except Exception as e:
+        log.error(f"Failed to pin summary for {user_id}: {e}")
 
 
 async def _get_today_meals_list(user_id: int) -> list:
@@ -356,6 +416,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await db.add_chat_message(update.effective_user.id, "user", text)
         await db.add_chat_message(update.effective_user.id, "assistant", reply)
         await msg.edit_text(reply)
+        await update_pinned_summary(update.effective_user.id, ctx.bot)
 
     elif intent == "sleep":
         import re
@@ -416,6 +477,7 @@ async def cmd_undo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"Удалено: {meal['description']} ({meal['calories']} ккал)\n\n"
         f"Итого за день: {stats['calories']}/{user['daily_calories_target']} ккал"
     )
+    await update_pinned_summary(update.effective_user.id, ctx.bot)
 
 
 # ── /meals — list today's meals ───────────────────────────────────
@@ -463,6 +525,7 @@ async def cmd_delete(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"Удалено: {meal['description']} ({meal['calories']} ккал)\n\n"
         f"Итого за день: {stats['calories']}/{user['daily_calories_target']} ккал"
     )
+    await update_pinned_summary(update.effective_user.id, ctx.bot)
 
 
 # ── /weight ─────────────────────────────────────────────────────────
@@ -520,6 +583,7 @@ async def cmd_activity(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"🔥 -{result['calories_burned']} ккал\n"
         + (f"\n💬 {result['comment']}" if result.get("comment") else "")
     )
+    await update_pinned_summary(update.effective_user.id, ctx.bot)
 
 
 # ── /today ──────────────────────────────────────────────────────────

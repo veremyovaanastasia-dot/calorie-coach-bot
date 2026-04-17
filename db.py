@@ -309,101 +309,133 @@ async def add_cycle(user_id: int, day_of_cycle: int, phase: str = None, note: st
 
 
 async def build_client_context(user_id: int) -> str:
-    """Build a comprehensive client context for the AI from ALL historical data."""
+    """Build a day-by-day diary for the AI — like a real coach's notes."""
     user = await get_user(user_id)
     if not user:
         return ""
 
+    today = today_local()
+    days_14_ago = days_ago_local(14)
     days_90_ago = days_ago_local(90)
-    days_7_ago = days_ago_local(7)
-    parts = []
+
     async with aiosqlite.connect(DB_PATH) as db:
-        # Weight trend (all time)
+        # All meals last 14 days
+        async with db.execute(
+            "SELECT date(created_at) as day, description, calories, protein "
+            "FROM meals WHERE user_id = ? AND created_at >= ? ORDER BY created_at",
+            (user_id, days_14_ago)
+        ) as cur:
+            all_meals = await cur.fetchall()
+
+        # Activities last 14 days
+        async with db.execute(
+            "SELECT date(created_at) as day, activity_type, duration_min, calories_burned "
+            "FROM activity_log WHERE user_id = ? AND created_at >= ? ORDER BY created_at",
+            (user_id, days_14_ago)
+        ) as cur:
+            all_activities = await cur.fetchall()
+
+        # Sleep last 14 days
+        async with db.execute(
+            "SELECT date(created_at) as day, hours, quality "
+            "FROM sleep_log WHERE user_id = ? AND created_at >= ? ORDER BY created_at",
+            (user_id, days_14_ago)
+        ) as cur:
+            all_sleep = await cur.fetchall()
+
+        # Mood last 14 days
+        async with db.execute(
+            "SELECT date(created_at) as day, mood, note "
+            "FROM mood_log WHERE user_id = ? AND created_at >= ? ORDER BY created_at",
+            (user_id, days_14_ago)
+        ) as cur:
+            all_mood = await cur.fetchall()
+
+        # Cycle last 14 days
+        async with db.execute(
+            "SELECT date(created_at) as day, day_of_cycle, phase "
+            "FROM cycle_log WHERE user_id = ? AND created_at >= ? ORDER BY created_at",
+            (user_id, days_14_ago)
+        ) as cur:
+            all_cycle = await cur.fetchall()
+
+        # Weight all time
         async with db.execute(
             "SELECT weight, date(created_at) FROM weight_log WHERE user_id = ? ORDER BY created_at",
             (user_id,)
         ) as cur:
-            weights = await cur.fetchall()
-        if weights:
-            first_w, last_w = weights[0][0], weights[-1][0]
-            parts.append(f"Вес: {first_w} кг ({weights[0][1]}) → {last_w} кг ({weights[-1][1]}), изменение {last_w - first_w:+.1f} кг за {len(weights)} замеров")
-            if len(weights) >= 3:
-                recent = [w[0] for w in weights[-7:]]
-                trend = "снижается" if recent[-1] < recent[0] else "растёт" if recent[-1] > recent[0] else "стабильный"
-                parts.append(f"Тренд веса (последние замеры): {trend}")
+            all_weights = await cur.fetchall()
 
-        # Weekly food averages (last 90 days)
+        # Older weekly summaries (weeks 3-12) for long-term view
         async with db.execute(
-            "SELECT date(created_at) as day, SUM(calories), SUM(protein), COUNT(*) "
-            "FROM meals WHERE user_id = ? AND created_at >= ? "
-            "GROUP BY date(created_at) ORDER BY day",
-            (user_id, days_90_ago)
+            "SELECT MIN(date(created_at)) || '..' || MAX(date(created_at)), "
+            "  ROUND(AVG(day_cal)), ROUND(AVG(day_prot)), COUNT(*) "
+            "FROM (SELECT date(created_at) as d, SUM(calories) as day_cal, "
+            "  SUM(protein) as day_prot, created_at "
+            "  FROM meals WHERE user_id = ? AND created_at >= ? AND created_at < ? "
+            "  GROUP BY date(created_at)) "
+            "GROUP BY strftime('%W', created_at) ORDER BY MIN(created_at)",
+            (user_id, days_90_ago, days_14_ago)
         ) as cur:
-            daily_food = await cur.fetchall()
-        if daily_food:
-            avg_cal = sum(r[1] for r in daily_food) / len(daily_food)
-            avg_prot = sum(r[2] for r in daily_food) / len(daily_food)
-            avg_meals = sum(r[3] for r in daily_food) / len(daily_food)
-            parts.append(f"Питание (среднее за {len(daily_food)} дней): {avg_cal:.0f} ккал, {avg_prot:.0f}г белка, {avg_meals:.1f} приёмов/день")
+            older_weeks = await cur.fetchall()
 
-            # Find patterns: frequent foods
-            async with db.execute(
-                "SELECT description, COUNT(*) as cnt FROM meals WHERE user_id = ? "
-                "AND created_at >= ? GROUP BY description ORDER BY cnt DESC LIMIT 5",
-                (user_id, days_90_ago)
-            ) as cur:
-                top_foods = await cur.fetchall()
-            if top_foods:
-                foods_str = ", ".join(f"{f[0]} ({f[1]}x)" for f in top_foods)
-                parts.append(f"Частая еда: {foods_str}")
+    # Group by day
+    from collections import defaultdict
+    days = defaultdict(lambda: {"meals": [], "act": [], "sleep": [], "mood": [], "cycle": []})
 
-        # Activity summary (last 90 days)
-        async with db.execute(
-            "SELECT COUNT(*), COALESCE(SUM(duration_min),0), COALESCE(SUM(calories_burned),0) "
-            "FROM activity_log WHERE user_id = ? AND created_at >= ?",
-            (user_id, days_90_ago)
-        ) as cur:
-            act = await cur.fetchone()
-        if act[0] > 0:
-            parts.append(f"Активность (14 дн): {act[0]} тренировок, {act[1]} мин, -{act[2]} ккал")
+    for r in all_meals:
+        days[r[0]]["meals"].append({"d": r[1], "c": r[2], "p": r[3]})
+    for r in all_activities:
+        days[r[0]]["act"].append({"t": r[1], "m": r[2], "b": r[3]})
+    for r in all_sleep:
+        days[r[0]]["sleep"].append({"h": r[1], "q": r[2]})
+    for r in all_mood:
+        days[r[0]]["mood"].append({"m": r[1], "n": r[2]})
+    for r in all_cycle:
+        days[r[0]]["cycle"].append({"day": r[1], "ph": r[2]})
 
-        # Sleep (last 7 days)
-        async with db.execute(
-            "SELECT hours, quality, note, date(created_at) FROM sleep_log "
-            "WHERE user_id = ? AND created_at >= ? ORDER BY created_at",
-            (user_id, days_7_ago)
-        ) as cur:
-            sleeps = await cur.fetchall()
-        if sleeps:
-            avg_sleep = sum(s[0] for s in sleeps) / len(sleeps)
-            parts.append(f"Сон (7 дн): среднее {avg_sleep:.1f}ч за {len(sleeps)} записей")
-            last_sleep = sleeps[-1]
-            parts.append(f"Последний сон: {last_sleep[0]}ч" + (f", {last_sleep[1]}" if last_sleep[1] else "") + (f" — {last_sleep[2]}" if last_sleep[2] else ""))
+    parts = []
 
-        # Mood (last 7 days)
-        async with db.execute(
-            "SELECT mood, energy, note, date(created_at) FROM mood_log "
-            "WHERE user_id = ? AND created_at >= ? ORDER BY created_at",
-            (user_id, days_7_ago)
-        ) as cur:
-            moods = await cur.fetchall()
-        if moods:
-            mood_list = [f"{m[3]}: {m[0]}" + (f" (энергия {m[1]}/10)" if m[1] else "") for m in moods[-5:]]
-            parts.append(f"Настроение (последние): {'; '.join(mood_list)}")
+    # Weight
+    if all_weights:
+        w0, wN = all_weights[0], all_weights[-1]
+        parts.append(f"Вес: {w0[0]} ({w0[1]}) → {wN[0]} ({wN[1]}), {wN[0]-w0[0]:+.1f} кг")
 
-        # Cycle (last entry)
-        async with db.execute(
-            "SELECT day_of_cycle, phase, note, date(created_at) FROM cycle_log "
-            "WHERE user_id = ? ORDER BY created_at DESC LIMIT 1",
-            (user_id,)
-        ) as cur:
-            cycle = await cur.fetchone()
-        if cycle:
-            parts.append(f"Цикл: день {cycle[0]}" + (f", фаза: {cycle[1]}" if cycle[1] else "") + (f" ({cycle[3]})" if cycle[3] else ""))
+    # Day-by-day diary (skip today — today's meals go separately)
+    sorted_days = sorted(d for d in days if d != today)
+    if sorted_days:
+        parts.append("\nДНЕВНИК ПО ДНЯМ:")
+        for day in sorted_days:
+            d = days[day]
+            line_parts = []
+            if d["meals"]:
+                total_c = sum(m["c"] for m in d["meals"])
+                total_p = sum(m["p"] for m in d["meals"])
+                foods = ", ".join(m["d"] for m in d["meals"])
+                line_parts.append(f"еда: {foods} = {total_c}ккал/{total_p:.0f}г белка")
+            if d["act"]:
+                acts = ", ".join(f"{a['t']} {a['m']}мин" for a in d["act"])
+                line_parts.append(f"активность: {acts}")
+            if d["sleep"]:
+                s = d["sleep"][-1]
+                line_parts.append(f"сон: {s['h']}ч" + (f" ({s['q']})" if s["q"] else ""))
+            if d["mood"]:
+                line_parts.append(f"настроение: {d['mood'][-1]['m']}")
+            if d["cycle"]:
+                c = d["cycle"][-1]
+                line_parts.append(f"цикл: день {c['day']} ({c['ph']})")
+            if line_parts:
+                parts.append(f"{day}: {' | '.join(line_parts)}")
+
+    # Older weeks
+    if older_weeks:
+        parts.append("\nСТАРШЕ 2 НЕДЕЛЬ (средние по неделям):")
+        for wk in older_weeks:
+            parts.append(f"{wk[0]}: ~{wk[1]:.0f} ккал/день, ~{wk[2]:.0f}г белка, {wk[3]} дней с записями")
 
     if not parts:
         return ""
-    return "\n\n## ПОЛНЫЙ КОНТЕКСТ КЛИЕНТА (исторические данные)\n" + "\n".join(f"- {p}" for p in parts)
+    return "\n\n## ИСТОРИЯ КЛИЕНТА\n" + "\n".join(parts)
 
 
 async def get_progress(user_id: int):

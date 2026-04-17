@@ -255,6 +255,7 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
     today_stats = await db.get_today_stats(update.effective_user.id)
+    today_meals = await _get_today_meals_list(update.effective_user.id)
     remaining = user["daily_calories_target"] - today_stats["calories"]
 
     # Compact nutrition line + Oleg's live comment
@@ -265,7 +266,7 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
     history = await db.get_chat_history(update.effective_user.id)
-    comment = await ai.comment_food(result, dict(user), today_stats, history, client_context)
+    comment = await ai.comment_food(result, dict(user), today_stats, history, client_context, today_meals)
 
     full_text = nutrition + comment
 
@@ -274,6 +275,12 @@ async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await db.add_chat_message(update.effective_user.id, "assistant", full_text)
 
     await msg.edit_text(full_text)
+
+
+async def _get_today_meals_list(user_id: int) -> list:
+    """Get today's meals as list of dicts for AI context."""
+    rows = await db.get_today_meals(user_id)
+    return [dict(r) for r in rows] if rows else []
 
 
 # ── Food logging (text) ────────────────────────────────────────────
@@ -293,6 +300,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text_lower = text.lower()
     today_stats = await db.get_today_stats(update.effective_user.id)
     client_context = await db.build_client_context(update.effective_user.id)
+    today_meals = await _get_today_meals_list(update.effective_user.id)
 
     history = await db.get_chat_history(update.effective_user.id)
 
@@ -308,7 +316,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             # AI couldn't parse as food — treat as regular chat
             await msg.edit_text("...")
             await db.add_chat_message(update.effective_user.id, "user", text)
-            response = await ai.coach_response(text, dict(user), today_stats, history, client_context)
+            response = await ai.coach_response(text, dict(user), today_stats, history, client_context, today_meals)
             await db.add_chat_message(update.effective_user.id, "assistant", response)
             await msg.edit_text(response)
             return
@@ -328,6 +336,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
 
         today_stats = await db.get_today_stats(update.effective_user.id)
+        today_meals = await _get_today_meals_list(update.effective_user.id)
         remaining = user["daily_calories_target"] - today_stats["calories"]
 
         correction_note = ""
@@ -341,7 +350,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"Итого за день: {today_stats['calories']}/{user['daily_calories_target']} ккал | осталось {remaining}\n\n"
         )
 
-        comment = await ai.comment_food(result, dict(user), today_stats, history, client_context)
+        comment = await ai.comment_food(result, dict(user), today_stats, history, client_context, today_meals)
         reply = nutrition + comment
 
         await db.add_chat_message(update.effective_user.id, "user", text)
@@ -358,7 +367,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await db.add_sleep(update.effective_user.id, hours, quality, text)
         # Always respond as coach
         await db.add_chat_message(update.effective_user.id, "user", text)
-        response = await ai.coach_response(text, dict(user), today_stats, history, client_context)
+        response = await ai.coach_response(text, dict(user), today_stats, history, client_context, today_meals)
         await db.add_chat_message(update.effective_user.id, "assistant", response)
         await update.message.reply_text(response)
 
@@ -367,7 +376,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                "отличное" if any(w in text_lower for w in ["супер", "отличн", "счастлив", "бодр", "энерги"]) else "нормальное"
         await db.add_mood(update.effective_user.id, mood, note=text)
         await db.add_chat_message(update.effective_user.id, "user", text)
-        response = await ai.coach_response(text, dict(user), today_stats, history, client_context)
+        response = await ai.coach_response(text, dict(user), today_stats, history, client_context, today_meals)
         await db.add_chat_message(update.effective_user.id, "assistant", response)
         await update.message.reply_text(response)
 
@@ -379,14 +388,14 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             phase = "менструальная" if day <= 5 else "фолликулярная" if day <= 14 else "лютеиновая"
             await db.add_cycle(update.effective_user.id, day, phase, text)
         await db.add_chat_message(update.effective_user.id, "user", text)
-        response = await ai.coach_response(text, dict(user), today_stats, history, client_context)
+        response = await ai.coach_response(text, dict(user), today_stats, history, client_context, today_meals)
         await db.add_chat_message(update.effective_user.id, "assistant", response)
         await update.message.reply_text(response)
 
     else:
         # Regular chat / coaching
         await db.add_chat_message(update.effective_user.id, "user", text)
-        response = await ai.coach_response(text, dict(user), today_stats, history, client_context)
+        response = await ai.coach_response(text, dict(user), today_stats, history, client_context, today_meals)
         await db.add_chat_message(update.effective_user.id, "assistant", response)
         await update.message.reply_text(response)
 
@@ -663,8 +672,9 @@ async def cmd_coach(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     today_stats = await db.get_today_stats(update.effective_user.id)
     history = await db.get_chat_history(update.effective_user.id)
     client_context = await db.build_client_context(update.effective_user.id)
+    today_meals = await _get_today_meals_list(update.effective_user.id)
     prompt = " ".join(ctx.args) if ctx.args else "Дай мне совет на сегодня. Что мне поесть и как тренироваться?"
-    response = await ai.coach_response(prompt, dict(user), today_stats, history, client_context)
+    response = await ai.coach_response(prompt, dict(user), today_stats, history, client_context, today_meals)
     await db.add_chat_message(update.effective_user.id, "user", prompt)
     await db.add_chat_message(update.effective_user.id, "assistant", response)
     await update.message.reply_text(response)
@@ -799,8 +809,9 @@ async def evening_checkin(ctx: ContextTypes.DEFAULT_TYPE):
             prompt_parts.append("Если есть триггеры из контекста — используй коучинговые техники.")
             prompt_parts.append("Будь коротким (3-5 предложений), тёплым, как Олег. Не лекция, а живой вопрос.")
 
+            today_meals = await _get_today_meals_list(user_id)
             prompt = " ".join(prompt_parts)
-            response = await ai.coach_response(prompt, user, stats, history, client_context)
+            response = await ai.coach_response(prompt, user, stats, history, client_context, today_meals)
 
             await ctx.bot.send_message(user_id, response)
             await db.add_chat_message(user_id, "assistant", response)

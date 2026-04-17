@@ -203,18 +203,27 @@ def _detect_coaching_triggers(client_context: str, today_stats: dict, user: dict
 
 # ── System prompt builders ───────────────────────────────────────────
 
-def _build_coach_system(user: dict, today_stats: dict, client_context: str = "") -> list:
+def _build_coach_system(user: dict, today_stats: dict, client_context: str = "", today_meals: list = None) -> list:
     """Full system prompt with caching — static part cached, dynamic part fresh."""
     # Static part: persona template + knowledge (same for all users, cacheable)
     static = SYSTEM_PERSONA.split("## ДАННЫЕ КЛИЕНТА")[0] + KNOWLEDGE_BLOCK
+
+    # Format today's meal list
+    meals_str = ""
+    if today_meals:
+        meal_lines = []
+        for m in today_meals:
+            meal_lines.append(f"  • {m['description']} — {m['calories']} ккал (Б{m['protein']}г У{m['carbs']}г Ж{m['fat']}г)")
+        meals_str = "\n" + "\n".join(meal_lines)
 
     # Dynamic part: client data + today stats + historical context
     dynamic = f"""## ДАННЫЕ КЛИЕНТА
 - Имя: {user.get("name", "друг")}
 - Вес: {user.get("weight_current", "?")} кг → цель: {user.get("weight_goal", "?")} кг
 - Норма: {user.get("daily_calories_target", 1800)} ккал, белок: {user.get("daily_protein_target", 100)} г
-- Сегодня съедено: {today_stats.get("calories", 0)} ккал, {today_stats.get("protein", 0)} г белка
+- Сегодня съедено: {today_stats.get("calories", 0)} ккал, {today_stats.get("protein", 0)} г белка ({today_stats.get("meal_count", 0)} приёмов)
 - Мотивация: {user.get("motivation_type", "supportive")}
+- Сегодняшние приёмы пищи:{meals_str if meals_str else " пока нет"}
 
 ## ТИПЫ МОТИВАЦИИ
 - "supportive" — тёплая поддержка, но честная. "Ничего, бывает" — но потом конкретика.
@@ -240,11 +249,12 @@ def _build_coach_system(user: dict, today_stats: dict, client_context: str = "")
 - НЕ ТЯНИ похвалу за уши. Если нечего отметить — просто прокомментируй нейтрально.
 - Избегай банальщины: "горжусь тобой", "так держать", "ты умничка". Это звучит как бот, а не как Олег.
 
-## ВАЖНО: ПОДСЧЁТ КАЛОРИЙ
-- Цифры в "ДАННЫЕ КЛИЕНТА" выше — это ТОЧНЫЕ АКТУАЛЬНЫЕ данные на текущий момент. ВСЕГДА доверяй ТОЛЬКО им.
-- В истории чата могут быть сообщения за прошлые дни (помечены датой [ГГГГ-ММ-ДД]). Это СТАРЫЕ данные — НЕ суммируй их с сегодняшними.
-- Каждый день подсчёт калорий начинается с нуля. Вчерашние калории НЕ переносятся на сегодня.
-- Если спрашивают "сколько я съела сегодня" — бери цифру ТОЛЬКО из "ДАННЫЕ КЛИЕНТА" ("Сегодня съедено").
+## ВАЖНО: ПОДСЧЁТ КАЛОРИЙ И ЕДА ЗА ДЕНЬ
+- ЕДИНСТВЕННЫЙ ИСТОЧНИК ПРАВДЫ о сегодняшней еде — это "Сегодняшние приёмы пищи" в ДАННЫХ КЛИЕНТА выше.
+- Если спрашивают "что я ела сегодня" / "проанализируй день" — бери ТОЛЬКО из этого списка. НЕ из чата.
+- Цифры калорий/белка/углеводов — ТОЛЬКО из "ДАННЫЕ КЛИЕНТА". ТОЧКА.
+- В истории чата могут быть сообщения за прошлые дни (помечены датой [ГГГГ-ММ-ДД]) — это СТАРЫЕ данные, ИГНОРИРУЙ их при подсчётах.
+- Каждый день подсчёт начинается с нуля.
 
 ## КОУЧИНГ ПО СЛАДКОМУ И ПЕРЕЕДАНИЮ — ВАЖНЫЕ ГРАНИЦЫ
 
@@ -339,7 +349,7 @@ async def analyze_activity(text: str) -> dict:
     return _parse_json(resp.content[0].text)
 
 
-async def coach_response(text: str, user: dict, today_stats: dict, history: list = None, client_context: str = "") -> str:
+async def coach_response(text: str, user: dict, today_stats: dict, history: list = None, client_context: str = "", today_meals: list = None) -> str:
     messages = []
     if history:
         messages.extend(history)
@@ -348,13 +358,13 @@ async def coach_response(text: str, user: dict, today_stats: dict, history: list
         model=CLAUDE_MODEL_SMART,
         max_tokens=1500,
         temperature=0.85,
-        system=_build_coach_system(user, today_stats, client_context),
+        system=_build_coach_system(user, today_stats, client_context, today_meals),
         messages=messages,
     )
     return resp.content[0].text
 
 
-async def comment_food(food_data: dict, user: dict, today_stats: dict, history: list = None, client_context: str = "") -> str:
+async def comment_food(food_data: dict, user: dict, today_stats: dict, history: list = None, client_context: str = "", today_meals: list = None) -> str:
     remaining = user.get("daily_calories_target", 1800) - today_stats.get("calories", 0)
     prompt = (
         f"Я только что съела: {food_data.get('dish', '?')} — {food_data.get('calories', 0)} ккал, "
@@ -363,17 +373,17 @@ async def comment_food(food_data: dict, user: dict, today_stats: dict, history: 
         f"Осталось на сегодня: {remaining} ккал. "
         f"Прокомментируй кратко — 2-4 предложения."
     )
-    return await coach_response(prompt, user, today_stats, history, client_context)
+    return await coach_response(prompt, user, today_stats, history, client_context, today_meals)
 
 
-async def daily_summary(user: dict, today_stats: dict, client_context: str = "") -> str:
+async def daily_summary(user: dict, today_stats: dict, client_context: str = "", today_meals: list = None) -> str:
     prompt = (
         f"Подведи итог дня. Съедено {today_stats['calories']} ккал из {user.get('daily_calories_target', 1800)}, "
         f"белок {today_stats['protein']} г из {user.get('daily_protein_target', 100)}, "
         f"приёмов пищи: {today_stats['meal_count']}, сожжено активностью: {today_stats['calories_burned']} ккал. "
         f"Дай краткий вердикт и совет на завтра."
     )
-    return await coach_response(prompt, user, today_stats, client_context=client_context)
+    return await coach_response(prompt, user, today_stats, client_context=client_context, today_meals=today_meals)
 
 
 def _parse_json(text: str) -> dict:

@@ -382,6 +382,13 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     text = update.message.text.strip()
     text_lower = text.lower()
+
+    # Quick pin detection — before AI classifier
+    if any(w in text_lower for w in ["закреп", "запинь", "запини", "пинь", "обнови сводку", "сводк", "закрепи"]):
+        await update_pinned_summary(update.effective_user.id, ctx.bot)
+        await update.message.reply_text("Обновил закреп 📌")
+        return
+
     today_stats = await db.get_today_stats(update.effective_user.id)
     client_context = await db.build_client_context(update.effective_user.id)
     today_meals = await _get_today_meals_list(update.effective_user.id)

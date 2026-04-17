@@ -284,77 +284,81 @@ MONTHS_RU = ["января", "февраля", "марта", "апреля", "м
 
 async def update_pinned_summary(user_id: int, bot):
     """Create or update a pinned message with today's food & activity summary."""
-    user = await db.get_user(user_id)
-    if not user:
-        return
-    user = dict(user)
-    stats = await db.get_today_stats(user_id)
-    meals = await db.get_today_meals(user_id)
-    activities = await db.get_today_activities(user_id)
-    today = db.today_local()
+    try:
+        user = await db.get_user(user_id)
+        if not user:
+            return
+        user = dict(user)
+        stats = await db.get_today_stats(user_id)
+        meals = await db.get_today_meals(user_id)
+        activities = await db.get_today_activities(user_id)
+        today = db.today_local()
 
-    # Format date nicely
-    from datetime import datetime as _dt
-    d = _dt.strptime(today, "%Y-%m-%d")
-    date_str = f"{d.day} {MONTHS_RU[d.month - 1]}"
+        # Format date nicely
+        from datetime import datetime as _dt
+        d = _dt.strptime(today, "%Y-%m-%d")
+        date_str = f"{d.day} {MONTHS_RU[d.month - 1]}"
 
-    remaining = user["daily_calories_target"] - stats["calories"] + stats["calories_burned"]
-    text = f"📊 Сегодня, {date_str}\n\n"
-    text += f"🔥 {stats['calories']} / {user['daily_calories_target']} ккал (осталось {remaining})\n"
-    text += f"🥩 Белок: {stats['protein']:.0f} / {user['daily_protein_target']}г\n"
+        remaining = user["daily_calories_target"] - stats["calories"] + stats["calories_burned"]
+        text = f"📊 Сегодня, {date_str}\n\n"
+        text += f"🔥 {stats['calories']} / {user['daily_calories_target']} ккал (осталось {remaining})\n"
+        text += f"🥩 Белок: {stats['protein']:.0f} / {user['daily_protein_target']}г\n"
 
-    if meals:
-        text += "\n🍽 Еда:\n"
-        for m in meals:
-            text += f"• {m['description']} — {m['calories']} ккал\n"
+        if meals:
+            text += "\n🍽 Еда:\n"
+            for m in meals:
+                text += f"• {m['description']} — {m['calories']} ккал\n"
 
-    if activities:
-        text += "\n🏃 Активность:\n"
-        for a in activities:
-            text += f"• {a['activity_type']} {a['duration_min']}мин (-{a['calories_burned']} ккал)\n"
+        if activities:
+            text += "\n🏃 Активность:\n"
+            for a in activities:
+                text += f"• {a['activity_type']} {a['duration_min']}мин (-{a['calories_burned']} ккал)\n"
 
-    if not meals and not activities:
-        text += "\nПока пусто — записывай еду и активность!"
+        if not meals and not activities:
+            text += "\nПока пусто — записывай еду и активность!"
 
-    # Check if we already have a pinned message for today
-    pinned_id = user.get("pinned_message_id")
-    pinned_date = user.get("pinned_date")
+        # Check if we already have a pinned message for today
+        pinned_id = user.get("pinned_message_id")
+        pinned_date = user.get("pinned_date")
+        log.info(f"PINNED: user={user_id}, pinned_id={pinned_id}, pinned_date={pinned_date}, today={today}")
 
-    if pinned_id and pinned_date == today:
-        # Try to edit existing pinned message
-        try:
-            await bot.edit_message_text(text, chat_id=user_id, message_id=int(pinned_id))
-            return  # success — done
-        except Exception as e:
-            log.warning(f"Edit pinned failed for {user_id} (msg {pinned_id}): {e}")
-            # Try to delete old message before creating new
+        if pinned_id and pinned_date == today:
+            # Try to edit existing pinned message
+            try:
+                await bot.edit_message_text(text, chat_id=user_id, message_id=int(pinned_id))
+                log.info(f"PINNED: edited existing msg {pinned_id}")
+                return  # success — done
+            except Exception as e:
+                log.warning(f"PINNED: edit failed msg {pinned_id}: {e}")
+                try:
+                    await bot.delete_message(chat_id=user_id, message_id=int(pinned_id))
+                except Exception:
+                    pass
+
+        # Unpin and delete old message if it's from a different day
+        if pinned_id and pinned_date != today:
+            log.info(f"PINNED: old day msg, unpinning {pinned_id}")
+            try:
+                await bot.unpin_chat_message(chat_id=user_id, message_id=int(pinned_id))
+            except Exception:
+                pass
             try:
                 await bot.delete_message(chat_id=user_id, message_id=int(pinned_id))
             except Exception:
                 pass
 
-    # Unpin and delete old message if it's from a different day
-    if pinned_id and pinned_date != today:
-        try:
-            await bot.unpin_chat_message(chat_id=user_id, message_id=int(pinned_id))
-        except Exception:
-            pass
-        try:
-            await bot.delete_message(chat_id=user_id, message_id=int(pinned_id))
-        except Exception:
-            pass
-
-    # Send new message, save ID first, then try to pin
-    try:
+        # Send new message, save ID first, then try to pin
         msg = await bot.send_message(user_id, text)
-        # Save ID FIRST — so next time we can edit even if pin fails
+        log.info(f"PINNED: sent new msg {msg.message_id}")
         await db.upsert_user(user_id, pinned_message_id=msg.message_id, pinned_date=today)
+        log.info(f"PINNED: saved to DB")
         try:
             await bot.pin_chat_message(chat_id=user_id, message_id=msg.message_id, disable_notification=True)
+            log.info(f"PINNED: pin OK!")
         except Exception as e:
-            log.warning(f"Could not pin message for {user_id}: {e}")
+            log.error(f"PINNED: pin FAILED: {e}")
     except Exception as e:
-        log.error(f"Failed to send summary for {user_id}: {e}")
+        log.error(f"PINNED: update_pinned_summary crashed: {e}", exc_info=True)
 
 
 async def _get_today_meals_list(user_id: int) -> list:

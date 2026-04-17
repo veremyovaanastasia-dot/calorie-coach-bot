@@ -218,14 +218,24 @@ async def add_chat_message(user_id: int, role: str, content: str):
 async def get_chat_history(user_id: int, limit: int = 20):
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
-            "SELECT role, content FROM ("
-            "  SELECT role, content, id FROM chat_history "
+            "SELECT role, content, created_at FROM ("
+            "  SELECT role, content, created_at, id FROM chat_history "
             "  WHERE user_id = ? ORDER BY id DESC LIMIT ?"
             ") ORDER BY id ASC",
             (user_id, limit)
         ) as cur:
             rows = await cur.fetchall()
-    return [{"role": r[0], "content": r[1]} for r in rows]
+    today = today_msk()
+    result = []
+    for r in rows:
+        msg_date = r[2][:10] if r[2] else ""
+        if msg_date and msg_date != today:
+            # Prefix old messages with date so AI knows they're not from today
+            content = f"[{msg_date}] {r[1]}"
+        else:
+            content = r[1]
+        result.append({"role": r[0], "content": content})
+    return result
 
 
 async def add_sleep(user_id: int, hours: float, quality: str = None, note: str = None):

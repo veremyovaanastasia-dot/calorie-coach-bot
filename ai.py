@@ -1,10 +1,46 @@
 import json
 import base64
+import logging
+import urllib.request
+import urllib.parse
 import anthropic
 from config import ANTHROPIC_API_KEY, CLAUDE_MODEL_SMART, CLAUDE_MODEL_FAST
 from knowledge import EXPERT_KNOWLEDGE, MONDAY_CHANNEL_KNOWLEDGE
 
+log = logging.getLogger(__name__)
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+
+
+# ── Open Food Facts lookup (free, no API key) ───────────────────────
+
+def lookup_food(query: str) -> str:
+    """Search Open Food Facts for nutrition data. Returns a summary string or empty."""
+    try:
+        url = "https://world.openfoodfacts.org/cgi/search.pl?" + urllib.parse.urlencode({
+            "search_terms": query,
+            "search_simple": 1,
+            "action": "process",
+            "json": 1,
+            "page_size": 3,
+        })
+        req = urllib.request.Request(url, headers={"User-Agent": "CalorieCoachBot/1.0"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read())
+        products = data.get("products", [])
+        results = []
+        for p in products[:3]:
+            n = p.get("nutriments", {})
+            name = p.get("product_name", "?")
+            cal = n.get("energy-kcal_100g")
+            prot = n.get("proteins_100g")
+            carbs = n.get("carbohydrates_100g")
+            fat = n.get("fat_100g")
+            if cal is not None and name:
+                results.append(f"{name}: {cal} ккал, Б{prot}г У{carbs}г Ж{fat}г на 100г")
+        return "\n".join(results) if results else ""
+    except Exception as e:
+        log.debug(f"Open Food Facts lookup failed: {e}")
+        return ""
 
 # ── Persona prompt: WHO Oleg is + HOW he talks ──────────────────────
 
@@ -155,9 +191,15 @@ def _build_food_system(user: dict, today_stats: dict, client_context: str = "") 
 
 async def analyze_food_photo(photo_bytes: bytes, user: dict, today_stats: dict, caption: str = None, client_context: str = "") -> dict:
     b64 = base64.standard_b64encode(photo_bytes).decode()
+    # Try to look up nutrition data if caption provided
+    extra = ""
+    if caption:
+        db_info = lookup_food(caption)
+        if db_info:
+            extra = f"\n\nДанные из базы продуктов (на 100г, используй для точности):\n{db_info}"
     content = [
         {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}},
-        {"type": "text", "text": FOOD_ANALYSIS_PROMPT + (f"\nПользователь написал: {caption}" if caption else "")},
+        {"type": "text", "text": FOOD_ANALYSIS_PROMPT + (f"\nПользователь написал: {caption}" if caption else "") + extra},
     ]
     resp = client.messages.create(
         model=CLAUDE_MODEL_FAST,
@@ -169,11 +211,16 @@ async def analyze_food_photo(photo_bytes: bytes, user: dict, today_stats: dict, 
 
 
 async def analyze_food_text(text: str, user: dict, today_stats: dict, client_context: str = "") -> dict:
+    # Look up nutrition data from Open Food Facts
+    db_info = lookup_food(text)
+    extra = ""
+    if db_info:
+        extra = f"\n\nДанные из базы продуктов (на 100г, используй для точности):\n{db_info}"
     resp = client.messages.create(
         model=CLAUDE_MODEL_FAST,
         max_tokens=500,
         system=_build_food_system(user, today_stats, client_context),
-        messages=[{"role": "user", "content": FOOD_ANALYSIS_PROMPT + f"\nЕда: {text}"}],
+        messages=[{"role": "user", "content": FOOD_ANALYSIS_PROMPT + f"\nЕда: {text}" + extra}],
     )
     return _parse_json(resp.content[0].text)
 
